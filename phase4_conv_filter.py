@@ -1,9 +1,7 @@
 """
 Phase 4: Conversation Heuristic Filter
 
-Pure Python — no LLM calls.
-
-Applies the plan's Step 5 heuristics:
+Applies heuristics:
   - Minimum number of messages (CONV_MIN_MESSAGES).
   - Every assistant turn has content ≥ CONV_ASSISTANT_MIN_LEN.
   - No near-duplicate user messages (Levenshtein ≤ threshold).

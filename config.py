@@ -22,11 +22,11 @@ EMBED_SIMILARITY_THRESHOLD = float(os.environ.get("EMBED_SIMILARITY_THRESHOLD", 
 # -----------------------------------------------------------------------
 # SOURCE DATASET
 # -----------------------------------------------------------------------
-DATASET_ID = os.environ.get("DATASET_ID", "HuggingFaceFW/fineweb-edu")
+DATASET_ID = os.environ.get("DATASET_ID", "cemig-ceia/sites_educacionais")
 DATASET_SUBSET = os.environ.get("DATASET_SUBSET", "default")
-DATASET_SPLIT = os.environ.get("DATASET_SPLIT", "train")
+DATASET_SPLIT = os.environ.get("DATASET_SPLIT", "brasil_escola")
 DATASET_TEXT_FIELD = os.environ.get("DATASET_TEXT_FIELD", "text")
-DATASET_MAX_CHARS = int(os.environ.get("DATASET_MAX_CHARS", "12000"))
+DATASET_MAX_CHARS = int(os.environ.get("DATASET_MAX_CHARS", "120000"))
 DATASET_MIN_CHARS = int(os.environ.get("DATASET_MIN_CHARS", "800"))
 
 # -----------------------------------------------------------------------
@@ -48,13 +48,13 @@ ASSISTANT_TURN_TOP_P = float(os.environ.get("ASSISTANT_TURN_TOP_P", "0.9"))
 ASSISTANT_TURN_MAX_TOKENS = int(os.environ.get("ASSISTANT_TURN_MAX_TOKENS", "2048"))
 
 # Phase 3: number of extra user turns to add (drawn uniformly from this range)
-N_USER_TURNS_MIN = int(os.environ.get("N_USER_TURNS_MIN", "2"))
-N_USER_TURNS_MAX = int(os.environ.get("N_USER_TURNS_MAX", "4"))
+N_USER_TURNS_MIN = int(os.environ.get("N_USER_TURNS_MIN", "3"))
+N_USER_TURNS_MAX = int(os.environ.get("N_USER_TURNS_MAX", "3"))
 
 # Phase 5: LLM judge
-JUDGE_TEMPERATURE = float(os.environ.get("JUDGE_TEMPERATURE", "0.3"))
+JUDGE_TEMPERATURE = float(os.environ.get("JUDGE_TEMPERATURE", "0.0"))
 JUDGE_TOP_P = float(os.environ.get("JUDGE_TOP_P", "0.9"))
-JUDGE_MAX_TOKENS = int(os.environ.get("JUDGE_MAX_TOKENS", "512"))
+JUDGE_MAX_TOKENS = int(os.environ.get("JUDGE_MAX_TOKENS", "2048"))
 JUDGE_MIN_AVG_SCORE = float(os.environ.get("JUDGE_MIN_AVG_SCORE", "4.0"))
 
 # -----------------------------------------------------------------------
@@ -70,7 +70,7 @@ CONV_ADJACENT_LEVENSHTEIN_THRESHOLD = int(os.environ.get("CONV_ADJACENT_LEVENSHT
 # -----------------------------------------------------------------------
 # EXECUTION CONTROL
 # -----------------------------------------------------------------------
-NUM_ROWS = int(os.environ.get("NUM_ROWS", "100000"))
+NUM_ROWS = int(os.environ.get("NUM_ROWS", "100"))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "32"))
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "64"))
 

@@ -6,7 +6,6 @@ parse the five scores, compute the average, and keep only rows where
 avg > JUDGE_MIN_AVG_SCORE.
 
 Output JSONL adds: input_id, scores, avg_score
-origin_id is preserved from input unchanged.
 """
 
 import argparse

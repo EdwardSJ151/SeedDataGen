@@ -1,8 +1,6 @@
 """
 Phase 6: Embedding Similarity Filter (per sample_id)
 
-Uses a DIFFERENT model (sentence-transformers) — not the vLLM generation model.
-
 For each sample_id group, embed every conversation as text, then greedily
 keep only conversations whose cosine similarity with every already-kept
 conversation is ≤ EMBED_SIMILARITY_THRESHOLD.
