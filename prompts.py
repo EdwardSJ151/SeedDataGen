@@ -5,9 +5,7 @@ All prompt templates are verbatim from project_plan.md.
 Placeholders: {sample_text}, {conversation_history}, {conversation}.
 """
 
-# -----------------------------------------------------------------------
 # STEP 1 — QA generation prompt (system-only; model outputs QA pairs)
-# -----------------------------------------------------------------------
 QA_GENERATION_PROMPT = """\
 Tarefa:
 Leia o texto, faça perguntas e responda a elas.
@@ -33,9 +31,7 @@ Tarefa:
 Gere até 5 pares pergunta-resposta."""
 
 
-# -----------------------------------------------------------------------
 # STEP 4 — User turn prompt (generates the next simulated user message)
-# -----------------------------------------------------------------------
 USER_TURN_PROMPT = """\
 Você está simulando um usuário aprendendo sobre o conteúdo abaixo.
 
@@ -58,9 +54,7 @@ Histórico:
 Próxima mensagem do usuário:"""
 
 
-# -----------------------------------------------------------------------
 # STEP 4 — Assistant turn prompt (generates the assistant reply)
-# -----------------------------------------------------------------------
 ASSISTANT_TURN_PROMPT = """\
 Você é um assistente de IA útil e preciso.
 
@@ -81,9 +75,7 @@ Histórico:
 Resposta:"""
 
 
-# -----------------------------------------------------------------------
 # STEP 6 — LLM judge prompt (scores a conversation)
-# -----------------------------------------------------------------------
 JUDGE_PROMPT = """\
 Você é um avaliador de qualidade de conversas para treinamento de IA.
 

@@ -42,9 +42,7 @@ from SeedDataGen.utils import (
 client = AsyncOpenAI(base_url=VLLM_BASE_URL, api_key=VLLM_API_KEY)
 
 
-# -----------------------------------------------------------------------
 # LLM call
-# -----------------------------------------------------------------------
 async def _judge_conversation(
     model_id: str,
     sample_text: str,
@@ -70,9 +68,7 @@ async def _judge_conversation(
         return None
 
 
-# -----------------------------------------------------------------------
 # Batch processing
-# -----------------------------------------------------------------------
 async def _process_batch(
     model_id: str,
     batch: List[Dict[str, Any]],
@@ -121,9 +117,7 @@ async def _process_batch(
     return next_id, max_input_id, n_kept
 
 
-# -----------------------------------------------------------------------
 # Main
-# -----------------------------------------------------------------------
 async def main(
     input_file: str = PHASE4_OUTPUT,
     output_file: str = PHASE5_OUTPUT,

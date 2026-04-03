@@ -1,0 +1,6 @@
+python-dotenv
+openai
+tqdm
+datasets
+numpy
+sentence-transformers
