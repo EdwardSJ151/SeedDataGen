@@ -102,7 +102,10 @@ def main(
         write_jsonl_batch(output_file, out_buf)
 
     pbar.close()
-    print(f"Phase 4 done — kept {kept}, dropped {dropped} → {output_file}")
+    print(
+        f"Phase 4 done — kept {kept}, dropped {dropped} "
+        f"(from {kept + dropped} input conversations) → {output_file}"
+    )
 
 
 if __name__ == "__main__":

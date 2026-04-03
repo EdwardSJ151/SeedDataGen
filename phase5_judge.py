@@ -115,9 +115,10 @@ async def _process_batch(
         rows.append(item)
         next_id += 1
 
+    n_kept = len(rows)
     if rows:
         write_jsonl_batch(output_file, rows)
-    return next_id, max_input_id
+    return next_id, max_input_id, n_kept
 
 
 # -----------------------------------------------------------------------
@@ -141,17 +142,25 @@ async def main(
     total = count_jsonl_lines(input_file)
     pbar = tqdm(total=total, desc="Phase 5: LLM judge")
 
+    total_seen = 0
+    total_kept = 0
     for batch in iter_jsonl_batches(
         input_file,
         batch_size=batch_size,
         start_from_id=resume_from_input,
         required_fields=["sample_text", "messages"],
     ):
-        next_id, _ = await _process_batch(model_id, batch, next_id, output_file)
+        total_seen += len(batch)
+        next_id, _, n_kept = await _process_batch(model_id, batch, next_id, output_file)
+        total_kept += n_kept
         pbar.update(len(batch))
 
     pbar.close()
-    print(f"Phase 5 done — kept conversations with avg > {JUDGE_MIN_AVG_SCORE} → {output_file}")
+    dropped = total_seen - total_kept
+    print(
+        f"Phase 5 done — kept {total_kept}, dropped {dropped} "
+        f"(from {total_seen} input conversations; avg > {JUDGE_MIN_AVG_SCORE}) → {output_file}"
+    )
 
 
 if __name__ == "__main__":

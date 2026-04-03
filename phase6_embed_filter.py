@@ -33,7 +33,6 @@ from SeedDataGen.utils import (
     get_last_processed_id,
     get_max_int_field,
     count_jsonl_lines,
-    format_conversation_history,
 )
 
 
@@ -86,8 +85,8 @@ def main(
     output_file: str = PHASE6_OUTPUT,
     batch_size: int = BATCH_SIZE,
 ):
-    total = count_jsonl_lines(input_file)
-    print(f"Phase 6 — reading {total} conversations from {input_file}")
+    total_lines = count_jsonl_lines(input_file)
+    print(f"Phase 6 — JSONL has {total_lines} lines in {input_file}")
     print(f"Embedding model: {EMBED_MODEL_NAME}  device: {EMBED_DEVICE}")
 
     model = _load_embed_model()
@@ -107,6 +106,9 @@ def main(
     ):
         for item in batch:
             groups[item["sample_id"]].append(item)
+
+    n_loaded = sum(len(g) for g in groups.values())
+    print(f"Phase 6 — loaded {n_loaded} conversations into {len(groups)} sample_id groups (this run)")
 
     kept_total = 0
     dropped_total = 0
@@ -135,7 +137,11 @@ def main(
         write_jsonl_batch(output_file, out_buf)
 
     pbar.close()
-    print(f"Phase 6 done — kept {kept_total}, dropped {dropped_total} → {output_file}")
+    n_in = kept_total + dropped_total
+    print(
+        f"Phase 6 done — kept {kept_total}, dropped {dropped_total} "
+        f"(from {n_in} input conversations, {len(groups)} sample_id groups) → {output_file}"
+    )
 
 
 if __name__ == "__main__":

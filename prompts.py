@@ -20,9 +20,10 @@ Siga estas instruções:
   - comparação
   - compreensão
 3. Foque em informações factuais e importantes.
-4. Use linguagem clara e concisa.
-5. Use texto simples.
-6. Cada par deve estar em uma linha:
+4. Perguntas: claras e concisas.
+5. Respostas: claras e completas para serem úteis como resposta de um assistente, sem ser prolixo.
+6. Use texto simples e linguagem acessível.
+7. Cada par deve estar em uma linha:
    "Pergunta: ... Resposta: ..."
 
 Texto:

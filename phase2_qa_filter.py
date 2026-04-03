@@ -77,6 +77,8 @@ def main(
         for row in batch:
             groups[row["sample_id"]].append(row)
 
+    rows_in_run = sum(len(rows) for rows in groups.values())
+
     written = 0
     pbar = tqdm(total=len(groups), desc="Phase 2: QA filter")
     out_buf: List[Dict] = []
@@ -99,7 +101,11 @@ def main(
         written += len(out_buf)
 
     pbar.close()
-    print(f"Phase 2 done — {written} QA rows kept → {output_file}")
+    dropped = rows_in_run - written
+    print(
+        f"Phase 2 done — kept {written}, dropped {dropped} "
+        f"(from {rows_in_run} input QA rows) → {output_file}"
+    )
 
 
 if __name__ == "__main__":
