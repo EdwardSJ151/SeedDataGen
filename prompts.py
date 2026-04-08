@@ -31,6 +31,32 @@ Tarefa:
 Gere até 5 pares pergunta-resposta."""
 
 
+# STEP 1B — Answer rewrite prompt (optional; enriches Phase 1 answers before filtering)
+ANSWER_REWRITE_PROMPT = """\
+Você tem uma pergunta, uma resposta curta e o texto original de onde ela foi extraída.
+
+Sua tarefa é reescrever a resposta para torná-la mais completa e informativa, \
+sem adicionar informações que não estejam no texto.
+
+Regras:
+1. Use apenas informações presentes no texto.
+2. Não invente, não extrapole.
+3. Mantenha o foco na pergunta — não desvie para outros tópicos.
+4. A resposta deve ser mais rica que a original, mas ainda direta e objetiva.
+5. Responda em português.
+
+Texto:
+{sample_text}
+
+Pergunta:
+{question}
+
+Resposta original:
+{answer}
+
+Resposta reescrita:"""
+
+
 # STEP 4 — User turn prompt (generates the next simulated user message)
 USER_TURN_PROMPT = """\
 Você está simulando um usuário aprendendo sobre o conteúdo abaixo.

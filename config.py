@@ -51,6 +51,12 @@ JUDGE_TOP_P = float(os.environ.get("JUDGE_TOP_P", "0.9"))
 JUDGE_MAX_TOKENS = int(os.environ.get("JUDGE_MAX_TOKENS", "2048"))
 JUDGE_MIN_AVG_SCORE = float(os.environ.get("JUDGE_MIN_AVG_SCORE", "4.0"))
 
+# Phase 1B: Answer rewrite (optional)
+ENABLE_ANSWER_REWRITE = os.environ.get("ENABLE_ANSWER_REWRITE", "false").lower() == "true"
+ANSWER_REWRITE_TEMPERATURE = float(os.environ.get("ANSWER_REWRITE_TEMPERATURE", "0.5"))
+ANSWER_REWRITE_TOP_P = float(os.environ.get("ANSWER_REWRITE_TOP_P", "0.9"))
+ANSWER_REWRITE_MAX_TOKENS = int(os.environ.get("ANSWER_REWRITE_MAX_TOKENS", "512"))
+
 # HEURISTIC THRESHOLDS
 QA_MIN_ANSWER_LEN = int(os.environ.get("QA_MIN_ANSWER_LEN", "10"))
 QA_LEVENSHTEIN_THRESHOLD = int(os.environ.get("QA_LEVENSHTEIN_THRESHOLD", "20"))
@@ -66,6 +72,7 @@ MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "64"))
 
 # OUTPUT FILES
 PHASE1_OUTPUT = os.environ.get("PHASE1_OUTPUT", "seed_phase1_qa.jsonl")
+PHASE1B_OUTPUT = os.environ.get("PHASE1B_OUTPUT", "seed_phase1b_qa_rewritten.jsonl")
 PHASE2_OUTPUT = os.environ.get("PHASE2_OUTPUT", "seed_phase2_qa_filtered.jsonl")
 PHASE3_OUTPUT = os.environ.get("PHASE3_OUTPUT", "seed_phase3_conversations.jsonl")
 PHASE4_OUTPUT = os.environ.get("PHASE4_OUTPUT", "seed_phase4_conv_filtered.jsonl")

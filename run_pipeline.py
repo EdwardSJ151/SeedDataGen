@@ -2,13 +2,14 @@
 """
 SeedDataGen Pipeline Runner
 
-Orchestrates all six phases:
-  Phase 1: QA generation          (async vLLM)
-  Phase 2: QA heuristic filter    (pure Python)
-  Phase 3: Conversation expansion (async vLLM)
-  Phase 4: Conversation filter    (pure Python)
-  Phase 5: LLM judge + score gate (async vLLM)
-  Phase 6: Embedding dedup        (sentence-transformers, different model)
+Orchestrates all phases:
+  Phase 1:  QA generation          (async vLLM)
+  Phase 1B: Answer rewrite         (async vLLM, optional — ENABLE_ANSWER_REWRITE=true)
+  Phase 2:  QA heuristic filter    (pure Python)
+  Phase 3:  Conversation expansion (async vLLM)
+  Phase 4:  Conversation filter    (pure Python)
+  Phase 5:  LLM judge + score gate (async vLLM)
+  Phase 6:  Embedding dedup        (sentence-transformers, different model)
 
 Usage:
     # Full pipeline
@@ -29,7 +30,9 @@ import sys
 from SeedDataGen.config import (
     BATCH_SIZE,
     NUM_ROWS,
+    ENABLE_ANSWER_REWRITE,
     PHASE1_OUTPUT,
+    PHASE1B_OUTPUT,
     PHASE2_OUTPUT,
     PHASE3_OUTPUT,
     PHASE4_OUTPUT,
@@ -48,6 +51,15 @@ async def run_phase1(num_rows: int, batch_size: int, output: str):
     from SeedDataGen.phase1_qa_gen import main as p1
 
     await p1(output_file=output, num_rows=num_rows, batch_size=batch_size)
+
+
+async def run_phase1b(input_file: str, batch_size: int, output: str):
+    print("\n" + "=" * 60)
+    print("PHASE 1B: Answer Rewrite")
+    print("=" * 60)
+    from SeedDataGen.phase1b_answer_rewrite import main as p1b
+
+    await p1b(input_file=input_file, output_file=output, batch_size=batch_size)
 
 
 def run_phase2(input_file: str, batch_size: int, output: str):
@@ -103,6 +115,7 @@ async def run_full_pipeline(
     batch_size: int,
     start_phase: int = 1,
     p1_out: str = PHASE1_OUTPUT,
+    p1b_out: str = PHASE1B_OUTPUT,
     p2_out: str = PHASE2_OUTPUT,
     p3_out: str = PHASE3_OUTPUT,
     p4_out: str = PHASE4_OUTPUT,
@@ -112,8 +125,14 @@ async def run_full_pipeline(
     if start_phase <= 1:
         await run_phase1(num_rows, batch_size, p1_out)
 
+    if ENABLE_ANSWER_REWRITE and start_phase <= 2:
+        await run_phase1b(p1_out, batch_size, p1b_out)
+
+    # Phase 2 reads from 1B output when rewrite is enabled, otherwise from Phase 1
+    p2_input = p1b_out if ENABLE_ANSWER_REWRITE else p1_out
+
     if start_phase <= 2:
-        run_phase2(p1_out, batch_size, p2_out)
+        run_phase2(p2_input, batch_size, p2_out)
 
     if start_phase <= 3:
         await run_phase3(p2_out, batch_size, p3_out)
@@ -189,6 +208,7 @@ Examples:
     print(f"vLLM URL: {os.environ.get('VLLM_BASE_URL', 'http://localhost:8020/v1')}")
     print(f"Batch size: {args.batch_size}")
     print(f"Num rows: {args.num_rows}")
+    print(f"Answer rewrite (Phase 1B): {'enabled' if ENABLE_ANSWER_REWRITE else 'disabled'}")
 
     if args.phase:
         print(f"Running: Phase {args.phase} only")
