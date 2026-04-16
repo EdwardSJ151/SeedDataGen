@@ -2,18 +2,18 @@
 Shared utilities for the SeedDataGen pipeline.
 
 JSONL I/O with resume support, Levenshtein distance, QA parsing,
-conversation formatting, and score parsing.
+conversation formatting, score parsing, and Pydantic schema helpers.
 """
 
 import json
 import os
 import re
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Type
+
+from pydantic import BaseModel
 
 
-# -----------------------------------------------------------------------
 # JSONL helpers (same patterns as PtPersonaIFGen)
-# -----------------------------------------------------------------------
 def get_last_processed_id(filepath: str) -> int:
     """Return the highest `id` written to *filepath*, or -1 if empty/missing."""
     return get_max_int_field(filepath, "id")
@@ -83,9 +83,21 @@ def count_jsonl_lines(filepath: str) -> int:
         return sum(1 for _ in f)
 
 
-# -----------------------------------------------------------------------
-# Levenshtein distance (simple DP — no external dependency)
-# -----------------------------------------------------------------------
+# Pydantic schema helpers
+_T = Type[BaseModel]
+
+
+def validate_row(schema: _T, data: Dict) -> BaseModel:
+    """Validate a raw dict against *schema*, returning a model instance."""
+    return schema.model_validate(data)
+
+
+def dump_row(obj: BaseModel) -> Dict:
+    """Serialise a Pydantic model to a plain dict for JSONL output."""
+    return obj.model_dump()
+
+
+# Levenshtein distance
 def levenshtein(a: str, b: str) -> int:
     if len(a) < len(b):
         return levenshtein(b, a)
@@ -101,9 +113,7 @@ def levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
-# -----------------------------------------------------------------------
 # QA parsing (Phase 1 output → list of dicts)
-# -----------------------------------------------------------------------
 _QA_RE = re.compile(
     r"[Pp]ergunta:\s*(.+?)\s*[Rr]esposta:\s*(.+?)(?=\n[Pp]ergunta:|\Z)",
     re.DOTALL,
@@ -124,9 +134,7 @@ def parse_qa_pairs(text: str) -> List[Dict[str, str]]:
     return pairs
 
 
-# -----------------------------------------------------------------------
 # Conversation formatting (for prompt injection)
-# -----------------------------------------------------------------------
 def format_conversation_history(messages: List[Dict[str, str]]) -> str:
     """Human-readable dump used inside prompts."""
     parts: List[str] = []
@@ -137,13 +145,10 @@ def format_conversation_history(messages: List[Dict[str, str]]) -> str:
 
 
 def format_conversation_for_judge(messages: List[Dict[str, str]]) -> str:
-    """Same formatting but labelled for the judge prompt."""
     return format_conversation_history(messages)
 
 
-# -----------------------------------------------------------------------
 # Score parsing (Phase 5 — LLM judge output)
-# -----------------------------------------------------------------------
 _SCORE_LABELS = ["fidelidade", "correção", "clareza", "coerência", "diversidade"]
 _SCORE_RE = re.compile(
     r"(?:fidelidade|correção|corre[cç][aã]o|clareza|coer[eê]ncia|diversidade)\s*:\s*(\d(?:[.,]\d)?)",

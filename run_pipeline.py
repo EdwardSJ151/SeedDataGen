@@ -2,230 +2,295 @@
 """
 SeedDataGen Pipeline Runner
 
-Orchestrates all phases:
-  Phase 1:  QA generation          (async vLLM)
-  Phase 1B: Answer rewrite         (async vLLM, optional — ENABLE_ANSWER_REWRITE=true)
-  Phase 2:  QA heuristic filter    (pure Python)
-  Phase 3:  Conversation expansion (async vLLM)
-  Phase 4:  Conversation filter    (pure Python)
-  Phase 5:  LLM judge + score gate (async vLLM)
-  Phase 6:  Embedding dedup        (sentence-transformers, different model)
+Loads the pipeline definition from pipeline.yaml, validates phase wiring
+(role transitions + schema compatibility), then runs each phase in order.
+Phase numbers are assigned dynamically from the order they appear in the YAML.
 
 Usage:
-    # Full pipeline
+    # Full pipeline (pipeline.yaml default)
     python -m SeedDataGen.run_pipeline --num-rows 10000
 
-    # Single phase
-    python -m SeedDataGen.run_pipeline --phase 3 --input seed_phase2_qa_filtered.jsonl
+    # Full pipeline with a custom YAML
+    python -m SeedDataGen.run_pipeline --pipeline my_pipeline.yaml
 
-    # Resume from phase 4 onwards
-    python -m SeedDataGen.run_pipeline --start-phase 4
+    # Start from a specific phase by name
+    python -m SeedDataGen.run_pipeline --start-from qa_filter
+
+    # Run a single phase only
+    python -m SeedDataGen.run_pipeline --only judge --input conv_filtered.jsonl
+
+    # List all registered phases
+    python -m SeedDataGen.run_pipeline --list-phases
 """
 
 import argparse
 import asyncio
+import contextlib
+import importlib
 import os
 import sys
+from pathlib import Path
+from typing import Any, Iterator, Optional
 
-from SeedDataGen.config import (
-    BATCH_SIZE,
-    NUM_ROWS,
-    ENABLE_ANSWER_REWRITE,
-    PHASE1_OUTPUT,
-    PHASE1B_OUTPUT,
-    PHASE2_OUTPUT,
-    PHASE3_OUTPUT,
-    PHASE4_OUTPUT,
-    PHASE5_OUTPUT,
-    PHASE6_OUTPUT,
-)
+import yaml
 
+from SeedDataGen.base_phase import Phase
+from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL
+from SeedDataGen.registry import get_phase, list_phases
 
-# -----------------------------------------------------------------------
-# Phase runners
-# -----------------------------------------------------------------------
-async def run_phase1(num_rows: int, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 1: QA Pair Generation")
-    print("=" * 60)
-    from SeedDataGen.phase1_qa_gen import main as p1
-
-    await p1(output_file=output, num_rows=num_rows, batch_size=batch_size)
+# ---------------------------------------------------------------------------
+# Auto-discover and import all phase_*.py modules so their @register
+# decorators fire before we look anything up in the registry.
+# ---------------------------------------------------------------------------
+_PHASE_PACKAGE = "SeedDataGen"
+_PHASE_DIR = Path(__file__).resolve().parent
 
 
-async def run_phase1b(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 1B: Answer Rewrite")
-    print("=" * 60)
-    from SeedDataGen.phase1b_answer_rewrite import main as p1b
-
-    await p1b(input_file=input_file, output_file=output, batch_size=batch_size)
+def _import_all_phases() -> None:
+    for path in sorted(_PHASE_DIR.glob("phase_*.py")):
+        module_name = f"{_PHASE_PACKAGE}.{path.stem}"
+        if module_name not in sys.modules:
+            importlib.import_module(module_name)
 
 
-def run_phase2(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 2: QA Heuristic Filter")
-    print("=" * 60)
-    from SeedDataGen.phase2_qa_filter import main as p2
-
-    p2(input_file=input_file, output_file=output, batch_size=batch_size)
-
-
-async def run_phase3(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 3: Conversation Expansion")
-    print("=" * 60)
-    from SeedDataGen.phase3_expand import main as p3
-
-    await p3(input_file=input_file, output_file=output, batch_size=batch_size)
-
-
-def run_phase4(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 4: Conversation Heuristic Filter")
-    print("=" * 60)
-    from SeedDataGen.phase4_conv_filter import main as p4
-
-    p4(input_file=input_file, output_file=output, batch_size=batch_size)
+# ---------------------------------------------------------------------------
+# YAML loading
+# ---------------------------------------------------------------------------
+def _load_pipeline_yaml(path: str) -> list[dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    entries = data.get("pipeline")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"pipeline.yaml must contain a non-empty 'pipeline' list. Got: {data!r}")
+    for i, entry in enumerate(entries):
+        if "phase" not in entry:
+            raise ValueError(f"Pipeline entry {i} is missing the 'phase' key: {entry!r}")
+        if "output" not in entry:
+            raise ValueError(f"Pipeline entry {i} (phase='{entry['phase']}') is missing the 'output' key.")
+    return entries
 
 
-async def run_phase5(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 5: LLM Judge Scoring")
-    print("=" * 60)
-    from SeedDataGen.phase5_judge import main as p5
+# ---------------------------------------------------------------------------
+# Per-phase config override (YAML config: block → temporary env vars)
+# ---------------------------------------------------------------------------
+@contextlib.contextmanager
+def _phase_env(overrides: dict[str, Any]) -> Iterator[None]:
+    """
+    Temporarily set environment variables from a YAML config: block, then
+    restore the previous values on exit.  Keys are uppercased automatically
+    so the YAML can use lowercase for readability.
+    """
+    if not overrides:
+        yield
+        return
 
-    await p5(input_file=input_file, output_file=output, batch_size=batch_size)
+    prev: dict[str, str | None] = {}
+    for key, val in overrides.items():
+        env_key = str(key).upper()
+        prev[env_key] = os.environ.get(env_key)
+        os.environ[env_key] = str(val)
+    try:
+        yield
+    finally:
+        for env_key, old_val in prev.items():
+            if old_val is None:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = old_val
 
 
-def run_phase6(input_file: str, batch_size: int, output: str):
-    print("\n" + "=" * 60)
-    print("PHASE 6: Embedding Similarity Filter")
-    print("=" * 60)
-    from SeedDataGen.phase6_embed_filter import main as p6
+# ---------------------------------------------------------------------------
+# Wiring validation
+# ---------------------------------------------------------------------------
+def _build_and_validate(entries: list[dict[str, Any]]) -> list[Phase]:
+    phases: list[Phase] = []
+    for entry in entries:
+        cls = get_phase(entry["phase"])
+        phases.append(cls())
 
-    p6(input_file=input_file, output_file=output, batch_size=batch_size)
+    for i in range(1, len(phases)):
+        prev = phases[i - 1]
+        curr = phases[i]
+        force = entries[i].get("force", False)
+        curr.check_compatible_with(prev, force=force)
+
+    return phases
 
 
-# -----------------------------------------------------------------------
-# Full pipeline
-# -----------------------------------------------------------------------
-async def run_full_pipeline(
-    num_rows: int,
-    batch_size: int,
-    start_phase: int = 1,
-    p1_out: str = PHASE1_OUTPUT,
-    p1b_out: str = PHASE1B_OUTPUT,
-    p2_out: str = PHASE2_OUTPUT,
-    p3_out: str = PHASE3_OUTPUT,
-    p4_out: str = PHASE4_OUTPUT,
-    p5_out: str = PHASE5_OUTPUT,
-    p6_out: str = PHASE6_OUTPUT,
-):
-    if start_phase <= 1:
-        await run_phase1(num_rows, batch_size, p1_out)
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+async def run_pipeline(
+    entries: list[dict[str, Any]],
+    phases: list[Phase],
+    *,
+    start_from: Optional[str] = None,
+    only: Optional[str] = None,
+    input_override: Optional[str] = None,
+    output_override: Optional[str] = None,
+    num_rows: int = NUM_ROWS,
+    batch_size: int = BATCH_SIZE,
+) -> None:
 
-    if ENABLE_ANSWER_REWRITE and start_phase <= 2:
-        await run_phase1b(p1_out, batch_size, p1b_out)
+    if only is not None:
+        # Single-phase mode
+        target_idx = next((i for i, p in enumerate(phases) if p.name == only), None)
+        if target_idx is None:
+            names = [p.name for p in phases]
+            raise ValueError(f"Phase '{only}' not found in pipeline. Available: {names}")
 
-    # Phase 2 reads from 1B output when rewrite is enabled, otherwise from Phase 1
-    p2_input = p1b_out if ENABLE_ANSWER_REWRITE else p1_out
+        entry = entries[target_idx]
+        phase = phases[target_idx]
+        step_num = target_idx + 1
+        in_file = input_override or (entries[target_idx - 1]["output"] if target_idx > 0 else "")
+        out_file = output_override or entry["output"]
 
-    if start_phase <= 2:
-        run_phase2(p2_input, batch_size, p2_out)
+        cfg_overrides: dict[str, Any] = entry.get("config", {}) or {}
 
-    if start_phase <= 3:
-        await run_phase3(p2_out, batch_size, p3_out)
+        print(f"\n{'=' * 60}")
+        print(f"Phase {step_num}: {phase.name}  [single-phase mode]")
+        print(f"  input : {in_file}")
+        print(f"  output: {out_file}")
+        if cfg_overrides:
+            print(f"  config: {cfg_overrides}")
+        print(f"{'=' * 60}")
 
-    if start_phase <= 4:
-        run_phase4(p3_out, batch_size, p4_out)
+        with _phase_env(cfg_overrides):
+            await phase.run(
+                input_file=in_file,
+                output_file=out_file,
+                num_rows=num_rows,
+                batch_size=batch_size,
+            )
+        return
 
-    if start_phase <= 5:
-        await run_phase5(p4_out, batch_size, p5_out)
+    # Full / partial pipeline
+    start_idx = 0
+    if start_from is not None:
+        start_idx = next((i for i, p in enumerate(phases) if p.name == start_from), None)
+        if start_idx is None:
+            names = [p.name for p in phases]
+            raise ValueError(f"Phase '{start_from}' not found in pipeline. Available: {names}")
 
-    if start_phase <= 6:
-        run_phase6(p5_out, batch_size, p6_out)
+    for step_num, (entry, phase) in enumerate(zip(entries, phases), start=1):
+        if step_num - 1 < start_idx:
+            continue
 
-    print("\n" + "=" * 60)
+        # Input is the previous step's output, except for the very first step
+        # or when the user overrides.
+        if step_num - 1 == start_idx and input_override:
+            in_file = input_override
+        elif step_num > 1:
+            in_file = entries[step_num - 2]["output"]
+        else:
+            in_file = ""  # generators don't use input_file
+
+        out_file = entry["output"]
+
+        cfg_overrides = entry.get("config", {}) or {}
+
+        print(f"\n{'=' * 60}")
+        print(f"Phase {step_num}: {phase.name}")
+        if in_file:
+            print(f"  input : {in_file}")
+        print(f"  output: {out_file}")
+        if cfg_overrides:
+            print(f"  config: {cfg_overrides}")
+        print(f"{'=' * 60}")
+
+        with _phase_env(cfg_overrides):
+            await phase.run(
+                input_file=in_file,
+                output_file=out_file,
+                num_rows=num_rows,
+                batch_size=batch_size,
+            )
+
+    print(f"\n{'=' * 60}")
     print("PIPELINE COMPLETE")
-    print("=" * 60)
-    print(f"Final output: {p6_out}")
+    print(f"{'=' * 60}")
+    final_output = entries[-1]["output"]
+    print(f"Final output: {final_output}")
 
 
-# -----------------------------------------------------------------------
-# Single phase
-# -----------------------------------------------------------------------
-async def run_single_phase(
-    phase: int,
-    input_file: str | None,
-    output_file: str | None,
-    batch_size: int,
-    num_rows: int,
-):
-    if phase == 1:
-        await run_phase1(num_rows, batch_size, output_file or PHASE1_OUTPUT)
-    elif phase == 2:
-        run_phase2(input_file or PHASE1_OUTPUT, batch_size, output_file or PHASE2_OUTPUT)
-    elif phase == 3:
-        await run_phase3(input_file or PHASE2_OUTPUT, batch_size, output_file or PHASE3_OUTPUT)
-    elif phase == 4:
-        run_phase4(input_file or PHASE3_OUTPUT, batch_size, output_file or PHASE4_OUTPUT)
-    elif phase == 5:
-        await run_phase5(input_file or PHASE4_OUTPUT, batch_size, output_file or PHASE5_OUTPUT)
-    elif phase == 6:
-        run_phase6(input_file or PHASE5_OUTPUT, batch_size, output_file or PHASE6_OUTPUT)
-    else:
-        print(f"Invalid phase: {phase}. Must be 1-6.")
-        sys.exit(1)
-
-
-# -----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # CLI
-# -----------------------------------------------------------------------
-def main():
+# ---------------------------------------------------------------------------
+def main() -> None:
+    _import_all_phases()
+
     parser = argparse.ArgumentParser(
         description="SeedDataGen Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-    python -m SeedDataGen.run_pipeline --num-rows 10000
-    python -m SeedDataGen.run_pipeline --phase 3 --input seed_phase2_qa_filtered.jsonl
-    python -m SeedDataGen.run_pipeline --start-phase 5
+  python -m SeedDataGen.run_pipeline --num-rows 10000
+  python -m SeedDataGen.run_pipeline --start-from qa_filter
+  python -m SeedDataGen.run_pipeline --only judge --input conv_filtered.jsonl
+  python -m SeedDataGen.run_pipeline --pipeline custom.yaml
+  python -m SeedDataGen.run_pipeline --list-phases
 """,
     )
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4, 5, 6])
-    parser.add_argument("--start-phase", type=int, default=1, choices=[1, 2, 3, 4, 5, 6])
-    parser.add_argument("--input", type=str, help="Override input file for the phase")
-    parser.add_argument("--output", type=str, help="Override output file for the phase")
+    parser.add_argument(
+        "--pipeline",
+        default=str(_PHASE_DIR / "pipeline.yaml"),
+        help="Path to pipeline YAML (default: SeedDataGen/pipeline.yaml)",
+    )
+    parser.add_argument(
+        "--start-from",
+        metavar="PHASE_NAME",
+        help="Resume from this phase (by name) onwards",
+    )
+    parser.add_argument(
+        "--only",
+        metavar="PHASE_NAME",
+        help="Run only this single phase",
+    )
+    parser.add_argument("--input", metavar="FILE", help="Override input file for the first/only phase")
+    parser.add_argument("--output", metavar="FILE", help="Override output file (only phase mode)")
     parser.add_argument("--num-rows", type=int, default=NUM_ROWS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument(
+        "--list-phases",
+        action="store_true",
+        help="Print all registered phase names and exit",
+    )
 
     args = parser.parse_args()
+
+    if args.list_phases:
+        print("Registered phases:")
+        for name in list_phases():
+            print(f"  {name}")
+        return
 
     print("=" * 60)
     print("SeedDataGen Pipeline")
     print("=" * 60)
-    print(f"vLLM URL: {os.environ.get('VLLM_BASE_URL', 'http://localhost:8020/v1')}")
+    print(f"vLLM URL  : {os.environ.get('VLLM_BASE_URL', VLLM_BASE_URL)}")
+    print(f"Pipeline  : {args.pipeline}")
     print(f"Batch size: {args.batch_size}")
-    print(f"Num rows: {args.num_rows}")
-    print(f"Answer rewrite (Phase 1B): {'enabled' if ENABLE_ANSWER_REWRITE else 'disabled'}")
+    print(f"Num rows  : {args.num_rows}")
+    if args.start_from:
+        print(f"Start from: {args.start_from}")
+    if args.only:
+        print(f"Only phase: {args.only}")
 
-    if args.phase:
-        print(f"Running: Phase {args.phase} only")
-        asyncio.run(run_single_phase(
-            phase=args.phase,
-            input_file=args.input,
-            output_file=args.output,
-            batch_size=args.batch_size,
+    entries = _load_pipeline_yaml(args.pipeline)
+    phases = _build_and_validate(entries)
+
+    asyncio.run(
+        run_pipeline(
+            entries,
+            phases,
+            start_from=args.start_from,
+            only=args.only,
+            input_override=args.input,
+            output_override=args.output,
             num_rows=args.num_rows,
-        ))
-    else:
-        print(f"Running: Phase {args.start_phase} onwards")
-        asyncio.run(run_full_pipeline(
-            num_rows=args.num_rows,
             batch_size=args.batch_size,
-            start_phase=args.start_phase,
-        ))
+        )
+    )
 
 
 if __name__ == "__main__":

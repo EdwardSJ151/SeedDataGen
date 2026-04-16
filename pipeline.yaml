@@ -1,0 +1,46 @@
+# SeedDataGen pipeline definition
+#
+# Each entry:
+#   phase   : registered phase name (Phase.name in the phase file)
+#   output  : JSONL file this phase writes to
+#   force   : (optional) bypass the role-transition compatibility gate (bool)
+#   config  : (optional) per-phase config overrides — flat key/value map.
+#             Keys are uppercased and set as environment variables for the
+#             duration of that phase only, so they feed directly into the
+#             phase's Pydantic BaseSettings (e.g. JUDGE_MIN_AVG_SCORE=3.5).
+#             Values may be strings, numbers or booleans.
+
+
+pipeline:
+  - phase: qa_gen
+    output: qa_gen.jsonl
+
+  # - phase: answer_rewrite
+  #   output: qa_rewritten.jsonl
+
+  - phase: qa_filter
+    output: qa_filtered.jsonl
+
+  - phase: conv_expand
+    output: conv_expanded.jsonl
+  
+  # Style-aware variant (requires qa_gen_var output as input):
+  # - phase: conv_expand_var
+  #   output: conv_expanded.jsonl
+  #   config:
+  #     CONV_EXPAND_VAR_NAIVE_GEN: false
+  #     CONV_EXPAND_VAR_QUESTION_STYLES: "easy,medium,hard,extra_hard"
+
+  - phase: conv_filter
+    output: conv_filtered.jsonl
+
+  - phase: judge
+    output: judged.jsonl
+    # config:
+    #   JUDGE_MIN_AVG_SCORE: 3.5
+    #   JUDGE_TEMPERATURE: 0.1
+
+  - phase: embed_filter
+    output: final.jsonl
+    # config:
+    #   EMBED_FILTER_SIMILARITY_THRESHOLD: 0.95
