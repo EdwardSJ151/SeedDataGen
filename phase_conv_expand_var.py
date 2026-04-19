@@ -50,6 +50,7 @@ from SeedDataGen.schemas import ConversationRow, StyledQARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
+    format_user_history,
     get_last_processed_id,
     get_max_int_field,
     iter_jsonl_batches,
@@ -58,7 +59,7 @@ from SeedDataGen.utils import (
 
 
 class ConvExpandVarConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="CONV_EXPAND_VAR_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="CONV_EXPAND_VAR_", env_file=".env", extra="ignore", enable_decoding=False)
 
     naive_gen: bool = True
     question_styles: List[str] = ["general", "specific", "compositional", "comparative"]
@@ -202,10 +203,10 @@ async def _expand_conversation(
     use_diversity = not cfg.naive_gen and previous_questions
 
     for style in styles:
-        history_str = format_conversation_history(messages)
+        user_history_str = format_user_history(messages)
         user_msg = await _generate_user_turn(
             client, model_id,
-            sample_text, history_str, style,
+            sample_text, user_history_str, style,
             previous_questions=previous_questions if use_diversity else None,
             temperature=cfg.user_turn_temperature,
             top_p=cfg.user_turn_top_p,
@@ -215,10 +216,10 @@ async def _expand_conversation(
             break
         messages.append({"role": "user", "content": user_msg})
 
-        history_str = format_conversation_history(messages)
+        full_history_str = format_conversation_history(messages)
         asst_msg = await _generate_assistant_turn(
             client, model_id,
-            sample_text, history_str,
+            sample_text, full_history_str,
             temperature=cfg.assistant_turn_temperature,
             top_p=cfg.assistant_turn_top_p,
             max_tokens=cfg.assistant_turn_max_tokens,
@@ -312,6 +313,37 @@ class ConvExpandVarPhase(Phase):
     role = PhaseRole.EDITOR
     input_schema = StyledQARow
     output_schema = ConversationRow
+
+    def describe_prompts(self):
+        cfg = ConvExpandVarConfig()
+        results = []
+
+        for style in cfg.question_styles:
+            style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
+
+            user_naive = USER_TURN_VAR_PROMPT.format(
+                style_instruction=style_instruction,
+                sample_text="[SAMPLE_TEXT]",
+                conversation_history="[PREVIOUS_USER_QUESTIONS]",
+            )
+            results.append((f"conv_expand_var / user turn — naive, style={style} (system)", user_naive))
+
+            if not cfg.naive_gen:
+                user_div = USER_TURN_VAR_DIVERSITY_PROMPT.format(
+                    style_instruction=style_instruction,
+                    sample_text="[SAMPLE_TEXT]",
+                    previous_questions="[SEED_QUESTIONS_FROM_OTHER_CONVERSATIONS]",
+                    conversation_history="[PREVIOUS_USER_QUESTIONS]",
+                )
+                results.append((f"conv_expand_var / user turn — diversity, style={style} (system)", user_div))
+
+        assistant = ASSISTANT_TURN_PROMPT.format(
+            sample_text="[SAMPLE_TEXT]",
+            conversation_history="[FULL_CONVERSATION_HISTORY]",
+        )
+        results.append(("conv_expand_var / assistant turn (system)", assistant))
+
+        return results
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = ConvExpandVarConfig()

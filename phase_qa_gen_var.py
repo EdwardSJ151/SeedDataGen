@@ -48,7 +48,7 @@ from SeedDataGen.utils import get_last_processed_id, get_max_int_field, parse_qa
 
 
 class QAGenVarConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="QA_GEN_VAR_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="QA_GEN_VAR_", env_file=".env", extra="ignore", enable_decoding=False)
 
     question_styles: List[str] = ["general", "specific", "compositional", "comparative"]
     temperature: float = 0.7
@@ -194,6 +194,18 @@ class QAGenVarPhase(Phase):
     role = PhaseRole.GENERATOR
     input_schema = None
     output_schema = StyledQARow
+
+    def describe_prompts(self):
+        cfg = QAGenVarConfig()
+        prompts = []
+        for style in cfg.question_styles:
+            style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
+            prompt = QA_GEN_VAR_SYSTEM_PROMPT.format(
+                style_instruction=style_instruction,
+                sample_text="[SAMPLE_TEXT]",
+            )
+            prompts.append((f"qa_gen_var / style={style} (user)", prompt))
+        return prompts
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = QAGenVarConfig()

@@ -21,6 +21,10 @@ Usage:
 
     # List all registered phases
     python -m SeedDataGen.run_pipeline --list-phases
+
+    # Dump all prompts to a text file (no LLM calls)
+    python -m SeedDataGen.run_pipeline --dump-prompts prompts.txt
+    python -m SeedDataGen.run_pipeline --pipeline pipeline_myver.yaml --dump-prompts prompts_myver.txt
 """
 
 import argparse
@@ -38,10 +42,8 @@ from SeedDataGen.base_phase import Phase
 from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL
 from SeedDataGen.registry import get_phase, list_phases
 
-# ---------------------------------------------------------------------------
 # Auto-discover and import all phase_*.py modules so their @register
 # decorators fire before we look anything up in the registry.
-# ---------------------------------------------------------------------------
 _PHASE_PACKAGE = "SeedDataGen"
 _PHASE_DIR = Path(__file__).resolve().parent
 
@@ -53,9 +55,7 @@ def _import_all_phases() -> None:
             importlib.import_module(module_name)
 
 
-# ---------------------------------------------------------------------------
 # YAML loading
-# ---------------------------------------------------------------------------
 def _load_pipeline_yaml(path: str) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
@@ -70,9 +70,7 @@ def _load_pipeline_yaml(path: str) -> list[dict[str, Any]]:
     return entries
 
 
-# ---------------------------------------------------------------------------
 # Per-phase config override (YAML config: block → temporary env vars)
-# ---------------------------------------------------------------------------
 @contextlib.contextmanager
 def _phase_env(overrides: dict[str, Any]) -> Iterator[None]:
     """
@@ -99,9 +97,7 @@ def _phase_env(overrides: dict[str, Any]) -> Iterator[None]:
                 os.environ[env_key] = old_val
 
 
-# ---------------------------------------------------------------------------
 # Wiring validation
-# ---------------------------------------------------------------------------
 def _build_and_validate(entries: list[dict[str, Any]]) -> list[Phase]:
     phases: list[Phase] = []
     for entry in entries:
@@ -117,9 +113,57 @@ def _build_and_validate(entries: list[dict[str, Any]]) -> list[Phase]:
     return phases
 
 
-# ---------------------------------------------------------------------------
+# Prompt dump
+def _dump_prompts(
+    entries: list[dict[str, Any]],
+    phases: list[Phase],
+    output_file: str,
+) -> None:
+    """
+    For every phase in the pipeline, apply its YAML config overrides, call
+    describe_prompts(), and write all rendered prompts to *output_file*.
+    No LLM calls or file I/O is performed.
+    """
+    lines: list[str] = []
+    lines.append("=" * 70)
+    lines.append("SEEDATAGEN — PIPELINE PROMPT DUMP")
+    lines.append("=" * 70)
+
+    for step_num, (entry, phase) in enumerate(zip(entries, phases), start=1):
+        cfg_overrides: dict[str, Any] = entry.get("config", {}) or {}
+
+        with _phase_env(cfg_overrides):
+            prompts = phase.describe_prompts()
+
+        header = f"Phase {step_num}: {phase.name}  (role={phase.role.value})"
+        if cfg_overrides:
+            header += f"  config={cfg_overrides}"
+        lines.append("")
+        lines.append("=" * 70)
+        lines.append(header)
+        lines.append("=" * 70)
+
+        if not prompts:
+            lines.append("  [no LLM prompts — heuristic/embedding phase]")
+        else:
+            for label, prompt_text in prompts:
+                lines.append("")
+                lines.append(f"--- {label} ---")
+                lines.append(prompt_text)
+
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append(f"Total phases: {len(phases)}")
+    lines.append("=" * 70)
+
+    output = "\n".join(lines)
+    with open(output_file, "w", encoding="utf-8") as fh:
+        fh.write(output)
+
+    print(f"Prompts written to: {output_file}")
+
+
 # Runner
-# ---------------------------------------------------------------------------
 async def run_pipeline(
     entries: list[dict[str, Any]],
     phases: list[Phase],
@@ -213,9 +257,7 @@ async def run_pipeline(
     print(f"Final output: {final_output}")
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 def main() -> None:
     _import_all_phases()
 
@@ -229,6 +271,8 @@ Examples:
   python -m SeedDataGen.run_pipeline --only judge --input conv_filtered.jsonl
   python -m SeedDataGen.run_pipeline --pipeline custom.yaml
   python -m SeedDataGen.run_pipeline --list-phases
+  python -m SeedDataGen.run_pipeline --dump-prompts prompts.txt
+  python -m SeedDataGen.run_pipeline --pipeline pipeline_myver.yaml --dump-prompts prompts_myver.txt
 """,
     )
     parser.add_argument(
@@ -255,6 +299,11 @@ Examples:
         action="store_true",
         help="Print all registered phase names and exit",
     )
+    parser.add_argument(
+        "--dump-prompts",
+        metavar="OUTPUT_TXT",
+        help="Render all pipeline prompts with placeholder values and write to a .txt file (no LLM calls)",
+    )
 
     args = parser.parse_args()
 
@@ -278,6 +327,10 @@ Examples:
 
     entries = _load_pipeline_yaml(args.pipeline)
     phases = _build_and_validate(entries)
+
+    if args.dump_prompts:
+        _dump_prompts(entries, phases, args.dump_prompts)
+        return
 
     asyncio.run(
         run_pipeline(

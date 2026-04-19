@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.registry import register
-from SeedDataGen.schemas import QARow
+from SeedDataGen.schemas import QARow, StyledQARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     get_last_processed_id,
@@ -59,7 +59,8 @@ class QAFilterPhase(Phase):
     name = "qa_filter"
     role = PhaseRole.FILTER
     input_schema = QARow
-    output_schema = QARow
+    # StyledQARow so that the pipeline validator accepts qa_gen_var → qa_filter → conv_expand_var.  qa_filter is a pure dict passthrough and preserves all extra fields (including question_style).
+    output_schema = StyledQARow
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = QAFilterConfig()

@@ -40,6 +40,7 @@ from SeedDataGen.schemas import ConversationRow, QARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
+    format_user_history,
     get_last_processed_id,
     get_max_int_field,
     iter_jsonl_batches,
@@ -115,19 +116,19 @@ async def _expand_conversation(
     use_diversity = not cfg.naive_gen and previous_questions
 
     for _ in range(n_turns):
-        history_str = format_conversation_history(messages)
+        user_history_str = format_user_history(messages)
 
         if use_diversity:
             prev_q_str = "\n".join(f"- {q}" for q in previous_questions)
             prompt = USER_TURN_DIVERSITY_PROMPT.format(
                 sample_text=sample_text,
                 previous_questions=prev_q_str,
-                conversation_history=history_str,
+                conversation_history=user_history_str,
             )
         else:
             prompt = USER_TURN_PROMPT.format(
                 sample_text=sample_text,
-                conversation_history=history_str,
+                conversation_history=user_history_str,
             )
 
         user_msg = await _llm_call(
@@ -140,10 +141,10 @@ async def _expand_conversation(
             break
         messages.append({"role": "user", "content": user_msg})
 
-        history_str = format_conversation_history(messages)
+        full_history_str = format_conversation_history(messages)
         asst_msg = await _llm_call(
             client, model_id,
-            ASSISTANT_TURN_PROMPT.format(sample_text=sample_text, conversation_history=history_str),
+            ASSISTANT_TURN_PROMPT.format(sample_text=sample_text, conversation_history=full_history_str),
             temperature=cfg.assistant_turn_temperature,
             top_p=cfg.assistant_turn_top_p,
             max_tokens=cfg.assistant_turn_max_tokens,
@@ -241,6 +242,32 @@ class ConvExpandPhase(Phase):
     role = PhaseRole.EDITOR
     input_schema = QARow
     output_schema = ConversationRow
+
+    def describe_prompts(self):
+        cfg = ConvExpandConfig()
+        results = []
+
+        user_naive = USER_TURN_PROMPT.format(
+            sample_text="[SAMPLE_TEXT]",
+            conversation_history="[PREVIOUS_USER_QUESTIONS]",
+        )
+        results.append(("conv_expand / user turn — naive (system)", user_naive))
+
+        if not cfg.naive_gen:
+            user_div = USER_TURN_DIVERSITY_PROMPT.format(
+                sample_text="[SAMPLE_TEXT]",
+                previous_questions="[SEED_QUESTIONS_FROM_OTHER_CONVERSATIONS]",
+                conversation_history="[PREVIOUS_USER_QUESTIONS]",
+            )
+            results.append(("conv_expand / user turn — diversity (system)", user_div))
+
+        assistant = ASSISTANT_TURN_PROMPT.format(
+            sample_text="[SAMPLE_TEXT]",
+            conversation_history="[FULL_CONVERSATION_HISTORY]",
+        )
+        results.append(("conv_expand / assistant turn (system)", assistant))
+
+        return results
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = ConvExpandConfig()

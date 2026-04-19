@@ -111,6 +111,14 @@ class AnswerRewritePhase(Phase):
     input_schema = QARow
     output_schema = QARow
 
+    def describe_prompts(self):
+        prompt = ANSWER_REWRITE_PROMPT.format(
+            sample_text="[SAMPLE_TEXT]",
+            question="[QUESTION]",
+            answer="[ORIGINAL_ANSWER]",
+        )
+        return [("answer_rewrite / main prompt (user)", prompt)]
+
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = AnswerRewriteConfig()
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)

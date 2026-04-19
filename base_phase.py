@@ -15,7 +15,7 @@ Compatibility between consecutive phases is checked in two layers:
 import warnings
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Set, Type
+from typing import List, Optional, Set, Tuple, Type
 
 from pydantic import BaseModel
 
@@ -75,6 +75,9 @@ class Phase(ABC):
                     f"'{self.input_schema.__name__}' (or a subclass). "
                     f"This cannot be bypassed with force=True."
                 )
+
+    def describe_prompts(self) -> List[Tuple[str, str]]:
+        return []
 
     @abstractmethod
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:

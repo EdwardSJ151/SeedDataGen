@@ -67,7 +67,7 @@ Regras:
 Texto:
 {sample_text}
 
-Histórico:
+Perguntas já feitas nesta conversa:
 {conversation_history}
 
 Próxima mensagem do usuário:"""
@@ -98,7 +98,7 @@ Texto:
 Tópicos já abordados em conversas anteriores sobre este texto (evite repeti-los):
 {previous_questions}
 
-Histórico desta conversa:
+Perguntas já feitas nesta conversa:
 {conversation_history}
 
 Próxima mensagem do usuário:"""
@@ -132,7 +132,7 @@ Texto:
 Tópicos já abordados em conversas anteriores sobre este texto (evite repeti-los):
 {previous_questions}
 
-Histórico desta conversa:
+Perguntas já feitas nesta conversa:
 {conversation_history}
 
 Próxima mensagem do usuário:"""
@@ -161,7 +161,7 @@ Regras:
 Texto:
 {sample_text}
 
-Histórico:
+Perguntas já feitas nesta conversa:
 {conversation_history}
 
 Próxima mensagem do usuário:"""
@@ -197,11 +197,10 @@ Instruções de estilo:
 
 Regras gerais:
 1. Foque em informações factuais e importantes do texto.
-2. A pergunta deve ser clara.
-3. A resposta deve ser clara, completa e útil como resposta de um assistente.
-4. Use texto simples e linguagem acessível.
-5. Responda em português.
-6. Formate a resposta exatamente assim:
+2. A resposta deve ser clara, completa e útil como resposta de um assistente.
+3. Use texto simples e linguagem acessível.
+4. Responda em português.
+5. Formate a resposta exatamente assim:
    Pergunta: ...
    Resposta: ...
 

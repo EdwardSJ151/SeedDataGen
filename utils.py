@@ -136,12 +136,19 @@ def parse_qa_pairs(text: str) -> List[Dict[str, str]]:
 
 # Conversation formatting (for prompt injection)
 def format_conversation_history(messages: List[Dict[str, str]]) -> str:
-    """Human-readable dump used inside prompts."""
+    """Full user+assistant history."""
     parts: List[str] = []
     for m in messages:
         role = "Usuário" if m["role"] == "user" else "Assistente"
         parts.append(f"{role}: {m['content']}")
     return "\n".join(parts)
+
+
+def format_user_history(messages: List[Dict[str, str]]) -> str:
+    """User-only question history."""
+    return "\n".join(
+        f"- {m['content']}" for m in messages if m["role"] == "user"
+    )
 
 
 def format_conversation_for_judge(messages: List[Dict[str, str]]) -> str:

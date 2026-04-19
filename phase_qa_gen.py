@@ -175,6 +175,11 @@ class QAGenPhase(Phase):
     input_schema = None
     output_schema = QARow
 
+    def describe_prompts(self):
+        cfg = QAGenConfig()
+        prompt = QA_GENERATION_PROMPT.format(sample_text="[SAMPLE_TEXT]")
+        return [("qa_gen / main prompt (user)", prompt)]
+
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = QAGenConfig()
         num_rows: int = kwargs.get("num_rows", NUM_ROWS)

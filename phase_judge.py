@@ -125,6 +125,13 @@ class JudgePhase(Phase):
     input_schema = ConversationRow
     output_schema = JudgedConversationRow
 
+    def describe_prompts(self):
+        prompt = JUDGE_PROMPT.format(
+            sample_text="[SAMPLE_TEXT]",
+            conversation="[CONVERSATION]",
+        )
+        return [("judge / scoring prompt (user)", prompt)]
+
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         cfg = JudgeConfig()
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)
