@@ -1,14 +1,8 @@
 # SeedDataGen pipeline definition
-#
-# Each entry:
-#   phase   : registered phase name (Phase.name in the phase file)
-#   output  : JSONL file this phase writes to
-#   force   : (optional) bypass the role-transition compatibility gate (bool)
-#   config  : (optional) per-phase config overrides — flat key/value map.
-#             Keys are uppercased and set as environment variables for the
-#             duration of that phase only, so they feed directly into the
-#             phase's Pydantic BaseSettings (e.g. JUDGE_MIN_AVG_SCORE=3.5).
-#             Values may be strings, numbers or booleans.
+
+env:
+  VLLM_BASE_URL: "http://my-server:8080/v1"
+  NUM_ROWS: "5000"
 
 
 pipeline:

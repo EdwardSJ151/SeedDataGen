@@ -56,7 +56,12 @@ def _import_all_phases() -> None:
 
 
 # YAML loading
-def _load_pipeline_yaml(path: str) -> list[dict[str, Any]]:
+def _load_pipeline_yaml(path: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """
+    Returns (entries, global_env) where:
+      entries    — the 'pipeline:' list
+      global_env — the optional top-level 'env:' dict (empty if absent)
+    """
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     entries = data.get("pipeline")
@@ -67,7 +72,17 @@ def _load_pipeline_yaml(path: str) -> list[dict[str, Any]]:
             raise ValueError(f"Pipeline entry {i} is missing the 'phase' key: {entry!r}")
         if "output" not in entry:
             raise ValueError(f"Pipeline entry {i} (phase='{entry['phase']}') is missing the 'output' key.")
-    return entries
+    global_env: dict[str, str] = {
+        str(k).upper(): str(v)
+        for k, v in (data.get("env") or {}).items()
+    }
+    return entries, global_env
+
+
+def _apply_global_env(global_env: dict[str, str]) -> None:
+    """Apply top-level env: block to os.environ before phases are imported."""
+    for key, val in global_env.items():
+        os.environ[key] = val
 
 
 # Per-phase config override (YAML config: block → temporary env vars)
@@ -259,8 +274,6 @@ async def run_pipeline(
 
 # CLI
 def main() -> None:
-    _import_all_phases()
-
     parser = argparse.ArgumentParser(
         description="SeedDataGen Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -308,10 +321,18 @@ Examples:
     args = parser.parse_args()
 
     if args.list_phases:
+        _import_all_phases()
         print("Registered phases:")
         for name in list_phases():
             print(f"  {name}")
         return
+
+    # Load YAML
+    entries, global_env = _load_pipeline_yaml(args.pipeline)
+    if global_env:
+        _apply_global_env(global_env)
+
+    _import_all_phases()
 
     print("=" * 60)
     print("SeedDataGen Pipeline")
@@ -324,8 +345,9 @@ Examples:
         print(f"Start from: {args.start_from}")
     if args.only:
         print(f"Only phase: {args.only}")
+    if global_env:
+        print(f"Global env: {global_env}")
 
-    entries = _load_pipeline_yaml(args.pipeline)
     phases = _build_and_validate(entries)
 
     if args.dump_prompts:
