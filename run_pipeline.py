@@ -305,8 +305,8 @@ Examples:
     )
     parser.add_argument("--input", metavar="FILE", help="Override input file for the first/only phase")
     parser.add_argument("--output", metavar="FILE", help="Override output file (only phase mode)")
-    parser.add_argument("--num-rows", type=int, default=NUM_ROWS)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--num-rows", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument(
         "--list-phases",
         action="store_true",
@@ -334,13 +334,17 @@ Examples:
 
     _import_all_phases()
 
+    # Resolve num_rows and batch_size after global env is applied
+    num_rows = args.num_rows if args.num_rows is not None else int(os.environ.get("NUM_ROWS", str(NUM_ROWS)))
+    batch_size = args.batch_size if args.batch_size is not None else int(os.environ.get("BATCH_SIZE", str(BATCH_SIZE)))
+
     print("=" * 60)
     print("SeedDataGen Pipeline")
     print("=" * 60)
     print(f"vLLM URL  : {os.environ.get('VLLM_BASE_URL', VLLM_BASE_URL)}")
     print(f"Pipeline  : {args.pipeline}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Num rows  : {args.num_rows}")
+    print(f"Batch size: {batch_size}")
+    print(f"Num rows  : {num_rows}")
     if args.start_from:
         print(f"Start from: {args.start_from}")
     if args.only:
@@ -362,8 +366,8 @@ Examples:
             only=args.only,
             input_override=args.input,
             output_override=args.output,
-            num_rows=args.num_rows,
-            batch_size=args.batch_size,
+            num_rows=num_rows,
+            batch_size=batch_size,
         )
     )
 
