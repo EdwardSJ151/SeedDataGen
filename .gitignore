@@ -2,3 +2,5 @@
 project_plan.md
 .env
 pipeline_myver.yaml
+prompts_genericos.py
+prompts_cemig.py

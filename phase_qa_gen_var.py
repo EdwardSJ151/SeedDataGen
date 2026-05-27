@@ -21,6 +21,7 @@ Output: QARow  — fully compatible with qa_filter and all downstream phases.
 """
 
 import asyncio
+import os
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
@@ -71,30 +72,37 @@ def _normalize(s: str) -> str:
 
 
 def _truncate(txt: str) -> str:
+    max_chars = int(os.environ.get("DATASET_MAX_CHARS", DATASET_MAX_CHARS))
+    min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     t = _normalize(txt)
-    if len(t) <= DATASET_MAX_CHARS:
+    if len(t) <= max_chars:
         return t
-    cut = t.rfind(".", 0, DATASET_MAX_CHARS)
-    if cut == -1 or cut < DATASET_MIN_CHARS:
-        return t[:DATASET_MAX_CHARS]
+    cut = t.rfind(".", 0, max_chars)
+    if cut == -1 or cut < min_chars:
+        return t[:max_chars]
     return t[: cut + 1]
 
 
 # Dataset streaming
 def _stream_dataset():
     from datasets import load_dataset
-    ds = load_dataset(DATASET_ID, DATASET_SUBSET, split=DATASET_SPLIT, streaming=True)
+    dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
+    dataset_subset = os.environ.get("DATASET_SUBSET", DATASET_SUBSET)
+    dataset_split = os.environ.get("DATASET_SPLIT", DATASET_SPLIT)
+    ds = load_dataset(dataset_id, dataset_subset, split=dataset_split, streaming=True)
     return iter(ds)
 
 
 def _next_valid_samples(ds_iter, n: int) -> List[Dict[str, Any]]:
+    text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+    min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
     for rec in ds_iter:
-        txt = rec.get(DATASET_TEXT_FIELD, "")
+        txt = rec.get(text_field, "")
         if not isinstance(txt, str):
             continue
         txt = _truncate(txt)
-        if len(txt) < DATASET_MIN_CHARS:
+        if len(txt) < min_chars:
             continue
         out.append({"sample_text": txt, "title": rec.get("title", "")})
         if len(out) >= n:
