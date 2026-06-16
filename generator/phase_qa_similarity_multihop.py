@@ -372,8 +372,16 @@ class QASimilarityMultihopPhase(Phase):
         used_pairs = _rebuild_used_pairs(output_file)
         emitted_keys: set = set()
 
-        pbar = tqdm(desc="[qa_similarity_multihop] generating", initial=next_row_id,
-                    total=None if exhaustive else num_rows)
+        if exhaustive:
+            est = await self.estimate(
+                num_rows=num_rows,
+                batch_size=batch_size,
+                similarity_jobs=jobs,
+            )
+            total = est if est is not None else 0
+        else:
+            total = num_rows
+        pbar = tqdm(desc="[qa_similarity_multihop] generating", initial=next_row_id, total=total)
 
         pending: List[Dict[str, Any]] = []
 
@@ -383,7 +391,7 @@ class QASimilarityMultihopPhase(Phase):
                 return
             next_row_id = await _process_batch(client, cfg, model_id, pending, next_row_id, output_file)
             pending = []
-            pbar.n = next_row_id if exhaustive else min(next_row_id, num_rows)
+            pbar.n = min(next_row_id, total)
             pbar.refresh()
 
         groups = similarity_groups_iter(

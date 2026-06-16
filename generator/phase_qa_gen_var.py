@@ -130,25 +130,61 @@ def _is_summary_row(rec: Dict[str, Any]) -> bool:
     return rec.get(chunk_type_field) == summary_value
 
 
-def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
+def _is_valid_chunk_rec(rec: Dict[str, Any], *, stream_idx: int = 0) -> Optional[str]:
+    """Return hf_row_id if *rec* passes the same filters as _next_valid_samples, else None."""
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
     id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-    doc_id_field = os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
     doc_name_field = get_dataset_doc_name_field()
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
+
+    if _is_summary_row(rec):
+        return None
+    txt = rec.get(text_field, "")
+    if not isinstance(txt, str):
+        return None
+    txt = _truncate(txt)
+    if len(txt) < min_chars:
+        return None
+    try:
+        hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
+        require_hf_field(rec, doc_name_field, row_label=f"row {stream_idx}")
+    except ValueError:
+        return None
+    return hf_row_id
+
+
+def _count_valid_chunks(
+    *,
+    skip_ids: Optional[set] = None,
+    need_chunks: Optional[int] = None,
+) -> int:
+    """Count HF chunks that would be processed (same filters as _next_valid_samples)."""
+    valid = 0
+    for stream_idx, rec in enumerate(_stream_dataset()):
+        hf_row_id = _is_valid_chunk_rec(rec, stream_idx=stream_idx)
+        if hf_row_id is None:
+            continue
+        if skip_ids and hf_row_id in skip_ids:
+            continue
+        valid += 1
+        if need_chunks is not None and valid >= need_chunks:
+            break
+    return valid
+
+
+def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
+    doc_id_field = os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
     out: List[Dict[str, Any]] = []
     for stream_idx, rec in _enumerate_global(ds_iter):
-        if _is_summary_row(rec):
+        hf_row_id = _is_valid_chunk_rec(rec, stream_idx=stream_idx)
+        if hf_row_id is None:
             continue
-        txt = rec.get(text_field, "")
-        if not isinstance(txt, str):
-            continue
-        txt = _truncate(txt)
-        if len(txt) < min_chars:
-            continue
-        hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
         if hf_row_id in skip_ids:
             continue
+        text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+        doc_id_field = os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
+        doc_name_field = get_dataset_doc_name_field()
+        txt = _truncate(rec.get(text_field, ""))
         document_name = str(require_hf_field(rec, doc_name_field, row_label=f"row {stream_idx}"))
         chunk_entry = make_chunk_entry(txt, document_name)
         sample: Dict[str, Any] = {
@@ -283,33 +319,11 @@ class QAGenVarPhase(Phase):
         exhaustive = num_rows < 0
 
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
-        dataset_subset = os.environ.get("DATASET_SUBSET", DATASET_SUBSET)
-        dataset_split = os.environ.get("DATASET_SPLIT", DATASET_SPLIT)
-        text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
-        id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-        min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
 
-        # Stop streaming once we have enough chunks to fill NUM_ROWS.
         need_chunks = None if exhaustive else math.ceil(num_rows / max(n_styles, 1))
 
-        from datasets import load_dataset
-        ds = load_dataset(dataset_id, dataset_subset, split=dataset_split, streaming=True)
-
         print(f"  [qa_gen_var] scanning {dataset_id} for valid chunks...", flush=True)
-        valid = 0
-        for rec in ds:
-            if _is_summary_row(rec):
-                continue
-            txt = rec.get(text_field, "")
-            if not isinstance(txt, str):
-                continue
-            if len(" ".join(txt.split())) < min_chars:
-                continue
-            if rec.get(id_field) is None:
-                continue
-            valid += 1
-            if need_chunks and valid >= need_chunks:
-                break
+        valid = _count_valid_chunks(need_chunks=need_chunks)
 
         rows = valid * n_styles
         if not exhaustive:
@@ -388,7 +402,16 @@ class QAGenVarPhase(Phase):
             ds_iter, [id_field, doc_name_field], dataset_id=dataset_id
         )
 
-        total = None if exhaustive else num_rows
+        if exhaustive:
+            print("[qa_gen_var] counting valid chunks for progress bar...", flush=True)
+            valid = _count_valid_chunks()
+            total = valid * len(cfg.question_styles)
+            print(
+                f"[qa_gen_var] plan: {valid:,} chunks × {len(cfg.question_styles)} styles "
+                f"= {total:,} QA rows"
+            )
+        else:
+            total = num_rows
         pbar = tqdm(desc="[qa_gen_var] generating", initial=next_row_id, total=total)
 
         while exhaustive or next_row_id < num_rows:
@@ -402,10 +425,7 @@ class QAGenVarPhase(Phase):
             next_row_id = await _process_batch(
                 client, cfg, model_id, samples, next_row_id, output_file, summary_map
             )
-            if total is not None:
-                pbar.n = min(next_row_id, num_rows)
-            else:
-                pbar.n = next_row_id
+            pbar.n = min(next_row_id, total)
             pbar.refresh()
 
         pbar.close()

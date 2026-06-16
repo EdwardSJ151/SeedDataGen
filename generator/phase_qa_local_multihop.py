@@ -275,8 +275,12 @@ class QALocalMultihopPhase(Phase):
         next_row_id = last_id + 1 if last_id >= 0 else 0
         done = _processed_window_styles(output_file)
 
-        pbar = tqdm(desc="[qa_local_multihop] generating", initial=next_row_id,
-                    total=None if exhaustive else num_rows)
+        if exhaustive:
+            est = await self.estimate(num_rows=num_rows, batch_size=batch_size)
+            total = est if est is not None else 0
+        else:
+            total = num_rows
+        pbar = tqdm(desc="[qa_local_multihop] generating", initial=next_row_id, total=total)
 
         pending: List[Dict[str, Any]] = []
 
@@ -286,7 +290,7 @@ class QALocalMultihopPhase(Phase):
                 return
             next_row_id = await _process_batch(client, cfg, model_id, pending, next_row_id, output_file)
             pending = []
-            pbar.n = next_row_id if exhaustive else min(next_row_id, num_rows)
+            pbar.n = min(next_row_id, total)
             pbar.refresh()
 
         for window in _iter_windows(collection, cfg.num_chunks, cfg.window_stride):
