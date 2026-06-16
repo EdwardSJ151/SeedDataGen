@@ -23,6 +23,7 @@ from SeedDataGen.registry import register
 from SeedDataGen.schemas import QARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
+    format_sample_text,
     get_last_processed_id,
     get_max_int_field,
     iter_jsonl_batches,
@@ -85,7 +86,8 @@ async def _process_batch(
         async with sem:
             return await _rewrite_answer(
                 client, cfg, model_id,
-                item["sample_text"], item["question"], item["answer"],
+                format_sample_text(item["sample_text"]),
+                item["question"], item["answer"],
             )
 
     raw_outputs = await asyncio.gather(*[_one(it) for it in batch])

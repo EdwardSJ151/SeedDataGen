@@ -12,7 +12,7 @@ Output: StyledQARow
 
 Row shape:
   - sample_id   : [hf_row_id, ...]   (one id per chunk in the window, in order)
-  - sample_text : {str(hf_row_id): chunk_text, ...}
+  - sample_text : {str(hf_row_id): {text, document_name}, ...}
   - GEN_TYPE    : "qa_local_multihop", num_chunks=NUM_CHUNKS, doc_constraint=None
   - question_style : the style that produced the pair
 
@@ -36,10 +36,14 @@ from SeedDataGen.preprocess.chunk_retrieval import doc_chunk_map, get_doc_chunks
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
+    format_doc_summary,
     format_sample_text,
     get_last_processed_id,
     get_sample_group_key,
+    is_summary_enabled,
+    load_doc_summaries,
     parse_qa_pairs,
+    sample_text_from_chunks,
     write_jsonl_batch,
 )
 
@@ -104,10 +108,13 @@ async def _generate(
     model_id: str,
     context_text: str,
     style: str,
+    *,
+    doc_summary: str = "",
 ) -> Optional[str]:
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, "")
     prompt = QA_LOCAL_MULTIHOP_PROMPT.format(
         style_instruction=style_instruction,
+        doc_summary=doc_summary,
         sample_text=context_text,
     )
     try:
@@ -140,7 +147,14 @@ async def _process_batch(
 
     async def _one(task: Dict[str, Any]) -> Optional[str]:
         async with sem:
-            return await _generate(client, cfg, model_id, task["context_text"], task["style"])
+            return await _generate(
+                client,
+                cfg,
+                model_id,
+                task["context_text"],
+                task["style"],
+                doc_summary=task.get("doc_summary", ""),
+            )
 
     raw_outputs = await asyncio.gather(*[_one(t) for t in tasks])
 
@@ -152,7 +166,7 @@ async def _process_batch(
         if not pairs:
             continue
         qa = pairs[0]
-        rows.append({
+        row: Dict[str, Any] = {
             "id": next_row_id,
             "origin_id": next_row_id,
             "sample_id": task["sample_id"],
@@ -163,7 +177,10 @@ async def _process_batch(
             "GEN_TYPE": GEN_TYPE,
             "num_chunks": cfg.num_chunks,
             "doc_constraint": None,
-        })
+        }
+        if task.get("document_id") is not None:
+            row["document_id"] = task["document_id"]
+        rows.append(row)
         next_row_id += 1
 
     if rows:
@@ -219,8 +236,14 @@ class QALocalMultihopPhase(Phase):
         prompts = []
         for style in _styles_from_env():
             style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
+            doc_summary = (
+                format_doc_summary("[DOCUMENT_SUMMARY]")
+                if is_summary_enabled()
+                else ""
+            )
             prompt = QA_LOCAL_MULTIHOP_PROMPT.format(
                 style_instruction=style_instruction,
+                doc_summary=doc_summary,
                 sample_text="[MULTI_CHUNK_CONTEXT]",
             )
             prompts.append((f"qa_local_multihop / style={style} (user)", prompt))
@@ -242,6 +265,12 @@ class QALocalMultihopPhase(Phase):
         model_id = models.data[0].id
         print(f"[qa_local_multihop] model: {model_id}")
 
+        summary_map: Dict[str, str] = {}
+        if is_summary_enabled():
+            print("[qa_local_multihop] loading document summaries...")
+            summary_map = load_doc_summaries()
+            print(f"[qa_local_multihop] loaded {len(summary_map):,} document summaries")
+
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
         done = _processed_window_styles(output_file)
@@ -262,9 +291,13 @@ class QALocalMultihopPhase(Phase):
 
         for window in _iter_windows(collection, cfg.num_chunks, cfg.window_stride):
             sample_id = [c["hf_row_id"] for c in window]
-            sample_text = {str(c["hf_row_id"]): c["text"] for c in window}
+            sample_text = sample_text_from_chunks(window)
             group_key = get_sample_group_key(sample_id)
             context_text = format_sample_text(sample_text)
+            doc_id = window[0].get("doc_id")
+            doc_summary = format_doc_summary(
+                summary_map.get(str(doc_id)) if doc_id is not None else None
+            )
 
             for style in styles:
                 if (group_key, style) in done:
@@ -274,6 +307,8 @@ class QALocalMultihopPhase(Phase):
                     "sample_text": sample_text,
                     "context_text": context_text,
                     "style": style,
+                    "doc_summary": doc_summary,
+                    "document_id": doc_id,
                 })
                 if len(pending) >= batch_size:
                     await _flush()

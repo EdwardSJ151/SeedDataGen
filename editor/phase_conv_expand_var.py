@@ -43,6 +43,7 @@ from SeedDataGen.editor.prompts import (
     ASSISTANT_TURN_PROMPT,
     CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE,
     CONV_EXPAND_USER_TURN_BY_GEN_TYPE,
+    CONV_EXPAND_USER_TURN_DIVERSITY_BY_GEN_TYPE,
     USER_TURN_VAR_DIVERSITY_PROMPT,
     USER_TURN_VAR_PROMPT,
 )
@@ -52,16 +53,28 @@ from SeedDataGen.schemas import ConversationRow, StyledQARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
+    format_doc_summary,
     format_sample_text,
     format_user_history,
     get_last_processed_id,
     get_max_int_field,
     get_sample_group_key,
+    is_summary_enabled,
     iter_jsonl_batches,
+    load_doc_summaries,
     write_jsonl_batch,
 )
 
 _DEFAULT_GEN_TYPE = "qa_gen_var"
+
+
+def _doc_summary_for_item(summary_map: Dict[str, str], item: Dict[str, Any]) -> str:
+    if not summary_map:
+        return ""
+    doc_id = item.get("document_id")
+    if doc_id is None:
+        return ""
+    return format_doc_summary(summary_map.get(str(doc_id)))
 
 
 class ConvExpandVarConfig(BaseSettings):
@@ -111,6 +124,7 @@ async def _generate_user_turn(
     *,
     gen_type: str,
     previous_questions: Optional[List[str]],
+    doc_summary: str,
     temperature: float,
     top_p: float,
     max_tokens: int,
@@ -127,8 +141,12 @@ async def _generate_user_turn(
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, "")
 
     if previous_questions:
-        prompt = USER_TURN_VAR_DIVERSITY_PROMPT.format(
+        template = CONV_EXPAND_USER_TURN_DIVERSITY_BY_GEN_TYPE.get(
+            gen_type, USER_TURN_VAR_DIVERSITY_PROMPT
+        )
+        prompt = template.format(
             style_instruction=style_instruction,
+            doc_summary=doc_summary,
             sample_text=sample_text,
             previous_questions="\n".join(f"- {q}" for q in previous_questions),
             conversation_history=history_str,
@@ -137,6 +155,7 @@ async def _generate_user_turn(
         template = CONV_EXPAND_USER_TURN_BY_GEN_TYPE.get(gen_type, USER_TURN_VAR_PROMPT)
         prompt = template.format(
             style_instruction=style_instruction,
+            doc_summary=doc_summary,
             sample_text=sample_text,
             conversation_history=history_str,
         )
@@ -204,6 +223,7 @@ async def _expand_conversation(
     seed_style: str,
     gen_type: str,
     *,
+    doc_summary: str = "",
     previous_questions: Optional[List[str]] = None,
 ) -> Optional[List[Dict[str, str]]]:
     messages: List[Dict[str, str]] = [
@@ -222,6 +242,7 @@ async def _expand_conversation(
             sample_text, user_history_str, style,
             gen_type=gen_type,
             previous_questions=previous_questions if use_diversity else None,
+            doc_summary=doc_summary,
             temperature=cfg.user_turn_temperature,
             top_p=cfg.user_turn_top_p,
             max_tokens=cfg.user_turn_max_tokens,
@@ -254,6 +275,7 @@ async def _process_batch(
     batch: List[Dict[str, Any]],
     next_id: int,
     output_file: str,
+    summary_map: Dict[str, str],
 ) -> tuple[int, int, int]:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
@@ -266,6 +288,7 @@ async def _process_batch(
                     {"question": item["question"], "answer": item["answer"]},
                     item["question_style"],
                     item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
+                    doc_summary=_doc_summary_for_item(summary_map, item),
                 )
 
         results = await asyncio.gather(*[_one_naive(it) for it in batch])
@@ -295,6 +318,7 @@ async def _process_batch(
                     {"question": item["question"], "answer": item["answer"]},
                     item["question_style"],
                     item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
+                    doc_summary=_doc_summary_for_item(summary_map, item),
                     previous_questions=prev_qs if prev_qs else None,
                 )
 
@@ -335,20 +359,37 @@ class ConvExpandVarPhase(Phase):
     def describe_prompts(self):
         cfg = ConvExpandVarConfig()
         results = []
+        doc_summary = (
+            format_doc_summary("[DOCUMENT_SUMMARY]")
+            if is_summary_enabled()
+            else ""
+        )
 
         for style in cfg.question_styles:
             style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
 
             user_naive = USER_TURN_VAR_PROMPT.format(
                 style_instruction=style_instruction,
+                doc_summary=doc_summary,
                 sample_text="[SAMPLE_TEXT]",
                 conversation_history="[PREVIOUS_USER_QUESTIONS]",
             )
             results.append((f"conv_expand_var / user turn — naive, style={style} (system)", user_naive))
 
+            user_multihop = CONV_EXPAND_USER_TURN_BY_GEN_TYPE["qa_local_multihop"].format(
+                style_instruction=style_instruction,
+                doc_summary=doc_summary,
+                sample_text="[MULTI_CHUNK_SAMPLE_TEXT]",
+                conversation_history="[PREVIOUS_USER_QUESTIONS]",
+            )
+            results.append(
+                (f"conv_expand_var / user turn — multihop naive, style={style} (system)", user_multihop)
+            )
+
             if not cfg.naive_gen:
                 user_div = USER_TURN_VAR_DIVERSITY_PROMPT.format(
                     style_instruction=style_instruction,
+                    doc_summary=doc_summary,
                     sample_text="[SAMPLE_TEXT]",
                     previous_questions="[SEED_QUESTIONS_FROM_OTHER_CONVERSATIONS]",
                     conversation_history="[PREVIOUS_USER_QUESTIONS]",
@@ -390,6 +431,12 @@ class ConvExpandVarPhase(Phase):
         print(f"[conv_expand_var] model: {model_id}  mode: {mode}")
         print(f"[conv_expand_var] style cycle: {cfg.question_styles}")
 
+        summary_map: Dict[str, str] = {}
+        if is_summary_enabled():
+            print("[conv_expand_var] loading document summaries...")
+            summary_map = load_doc_summaries()
+            print(f"[conv_expand_var] loaded {len(summary_map):,} document summaries")
+
         last_out_id = get_last_processed_id(output_file)
         next_id = last_out_id + 1 if last_out_id >= 0 else 0
 
@@ -408,7 +455,9 @@ class ConvExpandVarPhase(Phase):
             required_fields=["sample_text", "question", "answer", "question_style"],
         ):
             total_seen += len(batch)
-            next_id, _, n_kept = await _process_batch(client, cfg, model_id, batch, next_id, output_file)
+            next_id, _, n_kept = await _process_batch(
+                client, cfg, model_id, batch, next_id, output_file, summary_map
+            )
             total_kept += n_kept
             pbar.update(len(batch))
 

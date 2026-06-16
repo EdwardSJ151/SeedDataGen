@@ -13,7 +13,7 @@ Two access patterns:
 
 All chunk dicts returned by these helpers have the shape:
     {"id": str, "hf_row_id": Any, "doc_id": Any, "chunk_index": int,
-     "text": str, "similarity": float}
+     "document_name": str, "text": str, "similarity": float}
 """
 
 from __future__ import annotations
@@ -60,6 +60,7 @@ def get_doc_chunks(collection, doc_id: Any) -> List[Dict[str, Any]]:
                 "hf_row_id": meta.get("hf_row_id", cid),
                 "doc_id": meta.get("doc_id"),
                 "chunk_index": int(meta.get("chunk_index", 0)),
+                "document_name": str(meta.get("doc_name", "")),
                 "text": doc,
                 "similarity": 1.0,
             }
@@ -96,6 +97,7 @@ def local_window(
                 "hf_row_id": meta.get("hf_row_id", cid),
                 "doc_id": meta.get("doc_id"),
                 "chunk_index": int(meta.get("chunk_index", 0)),
+                "document_name": str(meta.get("doc_name", "")),
                 "text": doc,
                 "similarity": 1.0,
             }
@@ -175,6 +177,7 @@ def similarity_groups_iter(
             "hf_row_id": meta.get("hf_row_id", ids[idx]),
             "doc_id": meta.get("doc_id"),
             "chunk_index": int(meta.get("chunk_index", 0)),
+            "document_name": str(meta.get("doc_name", "")),
             "text": docs_by_idx[idx],
             "similarity": float(sim),
         }

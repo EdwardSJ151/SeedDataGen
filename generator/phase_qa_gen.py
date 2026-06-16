@@ -30,6 +30,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
+    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
@@ -47,8 +48,10 @@ from SeedDataGen.registry import register
 from SeedDataGen.schemas import QARow
 from SeedDataGen.utils import (
     assert_hf_dataset_has_fields,
+    format_sample_text,
     get_last_processed_id,
     get_processed_sample_ids,
+    make_chunk_entry,
     parse_qa_pairs,
     require_hf_field,
     write_jsonl_batch,
@@ -97,6 +100,7 @@ def _stream_dataset():
 def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
     id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+    doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
     for stream_idx, rec in _enumerate_global(ds_iter):
@@ -109,7 +113,13 @@ def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
         hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
         if hf_row_id in skip_ids:
             continue
-        out.append({"hf_row_id": hf_row_id, "sample_text": txt})
+        document_name = str(require_hf_field(rec, doc_name_field, row_label=f"row {stream_idx}"))
+        chunk_entry = make_chunk_entry(txt, document_name)
+        out.append({
+            "hf_row_id": hf_row_id,
+            "sample_text": chunk_entry,
+            "prompt_text": format_sample_text({hf_row_id: chunk_entry}),
+        })
         if len(out) >= n:
             break
     return out
@@ -139,7 +149,7 @@ async def _process_batch(
 
     async def _gen(sample: Dict[str, Any]) -> Optional[str]:
         async with sem:
-            prompt = QA_GENERATION_PROMPT.format(sample_text=sample["sample_text"])
+            prompt = QA_GENERATION_PROMPT.format(sample_text=sample["prompt_text"])
             try:
                 resp = await client.chat.completions.create(
                     model=model_id,
@@ -258,7 +268,10 @@ class QAGenPhase(Phase):
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
         id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-        ds_iter = assert_hf_dataset_has_fields(ds_iter, [id_field], dataset_id=dataset_id)
+        doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+        ds_iter = assert_hf_dataset_has_fields(
+            ds_iter, [id_field, doc_name_field], dataset_id=dataset_id
+        )
 
         total = None if exhaustive else num_rows
         pbar = tqdm(desc="[qa_gen] generating", initial=next_row_id, total=total)

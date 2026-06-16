@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
+    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_SPLIT,
     DATASET_SUBSET,
@@ -87,18 +88,20 @@ class ChromaPreprocessPhase(Phase):
             return
 
         text_col = cfg.metadata_text or os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+        doc_name_col = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
 
         collection = get_collection(cfg.vectorstore_name, cfg.persist_dir, cfg.embed_model)
         print(
             f"[chroma_preprocess] building '{cfg.vectorstore_name}' "
-            f"(embed_model={cfg.embed_model}, text_column={text_col!r}) → {cfg.persist_dir}"
+            f"(embed_model={cfg.embed_model}, text_column={text_col!r}, "
+            f"doc_name_column={doc_name_col!r}) → {cfg.persist_dir}"
         )
 
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
         ds_iter = assert_hf_dataset_has_fields(
             ds_iter,
-            [cfg.metadata_hf_row_id, cfg.metadata_chunk_index, text_col],
+            [cfg.metadata_hf_row_id, cfg.metadata_chunk_index, text_col, doc_name_col],
             dataset_id=dataset_id,
         )
         pbar = tqdm(desc="[chroma_preprocess] upserting")
@@ -126,6 +129,7 @@ class ChromaPreprocessPhase(Phase):
             hf_row_id = require_hf_field(rec, cfg.metadata_hf_row_id, row_label=row_label)
             chunk_index = require_hf_int_field(rec, cfg.metadata_chunk_index, row_label=row_label)
             doc_id = rec.get(cfg.metadata_doc_id, hf_row_id)
+            document_name = require_hf_field(rec, doc_name_col, row_label=row_label)
 
             buf_ids.append(str(hf_row_id))
             buf_docs.append(text)
@@ -134,6 +138,7 @@ class ChromaPreprocessPhase(Phase):
                     "hf_row_id": str(hf_row_id),
                     "doc_id": str(doc_id),
                     "chunk_index": chunk_index,
+                    "doc_name": str(document_name),
                 }
             )
 

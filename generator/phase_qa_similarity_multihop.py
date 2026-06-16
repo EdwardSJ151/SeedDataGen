@@ -15,7 +15,7 @@ Output: StyledQARow
 
 Row shape:
   - sample_id   : [hf_row_id, ...]  (one id per chunk in the group)
-  - sample_text : {str(hf_row_id): chunk_text, ...}
+  - sample_text : {str(hf_row_id): {text, document_name}, ...}
   - GEN_TYPE    : "qa_similarity_multihop", num_chunks, doc_constraint
   - similarity_job_index, similarity_mode, similarity_threshold,
     similarity_min, similarity_max, min_matching_words, chunk_group_similarity
@@ -46,10 +46,15 @@ from SeedDataGen.preprocess.chunk_retrieval import _pairs, similarity_groups_ite
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
+    format_doc_summaries_for_docs,
+    format_doc_summary,
     format_sample_text,
     get_last_processed_id,
     get_sample_group_key,
+    is_summary_enabled,
+    load_doc_summaries,
     parse_qa_pairs,
+    sample_text_from_chunks,
     write_jsonl_batch,
 )
 
@@ -118,10 +123,16 @@ async def _generate(
     context_text: str,
     style: str,
     positive: bool,
+    *,
+    doc_summary: str = "",
 ) -> Optional[str]:
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, "")
     template = QA_SIMILARITY_MULTIHOP_PROMPT_POSITIVE if positive else QA_SIMILARITY_MULTIHOP_PROMPT_NEGATIVE
-    prompt = template.format(style_instruction=style_instruction, sample_text=context_text)
+    prompt = template.format(
+        style_instruction=style_instruction,
+        doc_summary=doc_summary,
+        sample_text=context_text,
+    )
     try:
         resp = await client.chat.completions.create(
             model=model_id,
@@ -153,7 +164,13 @@ async def _process_batch(
     async def _one(task: Dict[str, Any]) -> Optional[str]:
         async with sem:
             return await _generate(
-                client, cfg, model_id, task["context_text"], task["style"], task["positive"]
+                client,
+                cfg,
+                model_id,
+                task["context_text"],
+                task["style"],
+                task["positive"],
+                doc_summary=task.get("doc_summary", ""),
             )
 
     raw_outputs = await asyncio.gather(*[_one(t) for t in tasks])
@@ -179,6 +196,8 @@ async def _process_batch(
             "doc_constraint": cfg.doc_constraint,
         }
         row.update(task["similarity_meta"])
+        if task.get("document_id") is not None:
+            row["document_id"] = task["document_id"]
         rows.append(row)
         next_row_id += 1
 
@@ -287,17 +306,26 @@ class QASimilarityMultihopPhase(Phase):
     def describe_prompts(self):
         sample_style = (_default_styles() or ["general"])[0]
         style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(sample_style, f"[STYLE: {sample_style}]")
+        doc_summary = (
+            format_doc_summary("[DOCUMENT_SUMMARY]")
+            if is_summary_enabled()
+            else ""
+        )
         return [
             (
                 "qa_similarity_multihop / positive (user)",
                 QA_SIMILARITY_MULTIHOP_PROMPT_POSITIVE.format(
-                    style_instruction=style_instruction, sample_text="[SIMILAR_CHUNKS]"
+                    style_instruction=style_instruction,
+                    doc_summary=doc_summary,
+                    sample_text="[SIMILAR_CHUNKS]",
                 ),
             ),
             (
                 "qa_similarity_multihop / negative (user)",
                 QA_SIMILARITY_MULTIHOP_PROMPT_NEGATIVE.format(
-                    style_instruction=style_instruction, sample_text="[DISSIMILAR_CHUNKS]"
+                    style_instruction=style_instruction,
+                    doc_summary=doc_summary,
+                    sample_text="[DISSIMILAR_CHUNKS]",
                 ),
             ),
         ]
@@ -332,6 +360,12 @@ class QASimilarityMultihopPhase(Phase):
         models = await client.models.list()
         model_id = models.data[0].id
         print(f"[qa_similarity_multihop] model: {model_id}")
+
+        summary_map: Dict[str, str] = {}
+        if is_summary_enabled():
+            print("[qa_similarity_multihop] loading document summaries...")
+            summary_map = load_doc_summaries()
+            print(f"[qa_similarity_multihop] loaded {len(summary_map):,} document summaries")
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
@@ -371,8 +405,10 @@ class QASimilarityMultihopPhase(Phase):
                 continue
             emitted_keys.add(group_key)
 
-            sample_text = {str(c["hf_row_id"]): c["text"] for c in group}
+            sample_text = sample_text_from_chunks(group)
             context_text = format_sample_text(sample_text)
+            doc_ids = [c["doc_id"] for c in group]
+            doc_summary = format_doc_summaries_for_docs(summary_map, doc_ids) if summary_map else ""
 
             non_seed = [c["similarity"] for c in group[1:]]
             group_sim = round(sum(non_seed) / len(non_seed), 4) if non_seed else 1.0
@@ -397,6 +433,8 @@ class QASimilarityMultihopPhase(Phase):
                     "style": style,
                     "positive": positive,
                     "similarity_meta": similarity_meta,
+                    "doc_summary": doc_summary,
+                    "document_id": doc_ids[0] if doc_ids else None,
                 })
                 if len(pending) >= batch_size:
                     await _flush()

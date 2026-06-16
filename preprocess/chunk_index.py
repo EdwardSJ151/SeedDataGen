@@ -6,7 +6,7 @@ A single persistent collection holds one entry per document chunk:
   - id:        str(hf_row_id)
   - document:  chunk text
   - embedding: computed by the configured sentence-transformers model
-  - metadata:  {hf_row_id, doc_id, chunk_index}
+  - metadata:  {hf_row_id, doc_id, chunk_index, doc_name}
 
 The collection name and persist directory come from the CHROMA_* config block.
 """

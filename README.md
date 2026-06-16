@@ -28,10 +28,10 @@ in `SeedDataGen/.env`.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — full architecture reference, data
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — full architecture reference, data
   contracts, how to add phases/generators, YAML format, and design rationale.
   This is the right starting point for any extension work.
-- **[PHASES.md](PHASES.md)** — concise per-phase reference card (role, config
+- **[PHASES.md](docs/PHASES.md)** — phase reference card (role, config
   prefix, key settings, input/output schema).
 
 ## Pipeline files

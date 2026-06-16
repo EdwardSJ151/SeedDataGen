@@ -16,6 +16,7 @@ env:
   DATASET_SPLIT: "train"
   DATASET_TEXT_FIELD: "text"              # HF chunk text column (qa_gen_var + chroma_preprocess)
   DATASET_ID_FIELD: "id"                  # HF row id (required; no fallback)
+  DATASET_DOC_NAME_FIELD: "document_name" # HF column for human-readable doc name (required)
   DATASET_MAX_CHARS: "1000000"
 
 preprocess:

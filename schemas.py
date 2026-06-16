@@ -25,8 +25,8 @@ class BaseRow(BaseModel):
     # HF row ids for multihop rows (one entry per chunk used).
     sample_id: Union[int, List[int]]
     # sample_text is the flat document string for legacy/single-chunk rows, or a
-    # {hf_row_id: chunk_text} mapping for multihop rows.
-    sample_text: Union[str, Dict[str, str]]
+    # {hf_row_id: chunk_text} or {hf_row_id: {text, document_name}} mapping for multihop rows.
+    sample_text: Union[str, Dict[str, Union[str, Dict[str, str]]]]
 
 
 class QARow(BaseRow):

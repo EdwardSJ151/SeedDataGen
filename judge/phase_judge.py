@@ -24,6 +24,7 @@ from SeedDataGen.schemas import ConversationRow, JudgedConversationRow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_for_judge,
+    format_sample_text,
     get_last_processed_id,
     get_max_int_field,
     iter_jsonl_batches,
@@ -82,7 +83,11 @@ async def _process_batch(
 
     async def _one(item: Dict[str, Any]):
         async with sem:
-            return await _judge_conversation(client, cfg, model_id, item["sample_text"], item["messages"])
+            return await _judge_conversation(
+                client, cfg, model_id,
+                format_sample_text(item["sample_text"]),
+                item["messages"],
+            )
 
     raw_outputs = await asyncio.gather(*[_one(it) for it in batch])
 

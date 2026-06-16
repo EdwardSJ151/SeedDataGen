@@ -14,7 +14,7 @@ Output: StyledQARow  — fully compatible with qa_filter and all downstream phas
 
 Row shape:
   - sample_id   : [hf_row_id]
-  - sample_text : {str(hf_row_id): text}
+  - sample_text : {str(hf_row_id): {text, document_name}}
   - GEN_TYPE    : "qa_gen_var", num_chunks=1, doc_constraint=None
   - question_style : the style that produced the pair
 """
@@ -31,12 +31,16 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
+    DATASET_CHUNK_TYPE_FIELD,
+    DATASET_DOC_ID_FIELD,
+    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
     DATASET_MIN_CHARS,
     DATASET_SPLIT,
     DATASET_SUBSET,
+    DATASET_SUMMARY_TYPE_VALUE,
     DATASET_TEXT_FIELD,
     NUM_ROWS,
     STOP_STRINGS,
@@ -48,8 +52,13 @@ from SeedDataGen.registry import register
 from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
     assert_hf_dataset_has_fields,
+    format_doc_summary,
+    format_sample_text,
     get_last_processed_id,
     get_processed_sample_ids,
+    is_summary_enabled,
+    load_doc_summaries,
+    make_chunk_entry,
     parse_qa_pairs,
     require_hf_field,
     write_jsonl_batch,
@@ -114,12 +123,22 @@ def _enumerate_global(ds_iter):
         _GLOBAL_STREAM_IDX += 1
 
 
+def _is_summary_row(rec: Dict[str, Any]) -> bool:
+    chunk_type_field = os.environ.get("DATASET_CHUNK_TYPE_FIELD", DATASET_CHUNK_TYPE_FIELD)
+    summary_value = os.environ.get("DATASET_SUMMARY_TYPE_VALUE", DATASET_SUMMARY_TYPE_VALUE)
+    return rec.get(chunk_type_field) == summary_value
+
+
 def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
     id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+    doc_id_field = os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
+    doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
     for stream_idx, rec in _enumerate_global(ds_iter):
+        if _is_summary_row(rec):
+            continue
         txt = rec.get(text_field, "")
         if not isinstance(txt, str):
             continue
@@ -129,7 +148,17 @@ def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
         hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
         if hf_row_id in skip_ids:
             continue
-        out.append({"hf_row_id": hf_row_id, "sample_text": txt})
+        document_name = str(require_hf_field(rec, doc_name_field, row_label=f"row {stream_idx}"))
+        chunk_entry = make_chunk_entry(txt, document_name)
+        sample: Dict[str, Any] = {
+            "hf_row_id": hf_row_id,
+            "sample_text": chunk_entry,
+            "prompt_text": format_sample_text({hf_row_id: chunk_entry}),
+        }
+        doc_id = rec.get(doc_id_field)
+        if doc_id is not None:
+            sample["doc_id"] = doc_id
+        out.append(sample)
         if len(out) >= n:
             break
     return out
@@ -142,6 +171,8 @@ async def _generate_qa_for_style(
     model_id: str,
     sample_text: str,
     style: str,
+    *,
+    doc_summary: str = "",
 ) -> Optional[str]:
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style)
     if style_instruction is None:
@@ -150,6 +181,7 @@ async def _generate_qa_for_style(
 
     prompt = QA_GEN_VAR_SYSTEM_PROMPT.format(
         style_instruction=style_instruction,
+        doc_summary=doc_summary,
         sample_text=sample_text,
     )
     try:
@@ -178,22 +210,28 @@ async def _process_batch(
     samples: List[Dict[str, Any]],
     next_row_id: int,
     output_file: str,
+    summary_map: Dict[str, str],
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
     tasks = []
     for sample in samples:
+        doc_summary = format_doc_summary(
+            summary_map.get(str(sample["doc_id"])) if sample.get("doc_id") is not None else None
+        )
         for style in cfg.question_styles:
-            tasks.append((sample, style))
+            tasks.append((sample, style, doc_summary))
 
-    async def _gen(sample: Dict[str, Any], style: str) -> Optional[str]:
+    async def _gen(sample: Dict[str, Any], style: str, doc_summary: str) -> Optional[str]:
         async with sem:
-            return await _generate_qa_for_style(client, cfg, model_id, sample["sample_text"], style)
+            return await _generate_qa_for_style(
+                client, cfg, model_id, sample["prompt_text"], style, doc_summary=doc_summary
+            )
 
-    raw_outputs = await asyncio.gather(*[_gen(s, st) for s, st in tasks])
+    raw_outputs = await asyncio.gather(*[_gen(s, st, ds) for s, st, ds in tasks])
 
     rows: List[Dict[str, Any]] = []
-    for (sample, style), raw in zip(tasks, raw_outputs):
+    for (sample, style, _), raw in zip(tasks, raw_outputs):
         if raw is None:
             continue
         pairs = parse_qa_pairs(raw)
@@ -201,7 +239,7 @@ async def _process_batch(
             continue
         qa = pairs[0]
         hf_row_id = sample["hf_row_id"]
-        rows.append({
+        row: Dict[str, Any] = {
             "id": next_row_id,
             "origin_id": next_row_id,
             "sample_id": [hf_row_id],
@@ -212,7 +250,10 @@ async def _process_batch(
             "GEN_TYPE": GEN_TYPE,
             "num_chunks": 1,
             "doc_constraint": None,
-        })
+        }
+        if sample.get("doc_id") is not None:
+            row["document_id"] = sample["doc_id"]
+        rows.append(row)
         next_row_id += 1
 
     if rows:
@@ -256,6 +297,8 @@ class QAGenVarPhase(Phase):
         print(f"  [qa_gen_var] scanning {dataset_id} for valid chunks...", flush=True)
         valid = 0
         for rec in ds:
+            if _is_summary_row(rec):
+                continue
             txt = rec.get(text_field, "")
             if not isinstance(txt, str):
                 continue
@@ -282,8 +325,14 @@ class QAGenVarPhase(Phase):
         prompts = []
         for style in cfg.question_styles:
             style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
+            doc_summary = (
+                format_doc_summary("[DOCUMENT_SUMMARY]")
+                if is_summary_enabled()
+                else ""
+            )
             prompt = QA_GEN_VAR_SYSTEM_PROMPT.format(
                 style_instruction=style_instruction,
+                doc_summary=doc_summary,
                 sample_text="[SAMPLE_TEXT]",
             )
             prompts.append((f"qa_gen_var / style={style} (user)", prompt))
@@ -319,6 +368,12 @@ class QAGenVarPhase(Phase):
         model_id = models.data[0].id
         print(f"[qa_gen_var] model: {model_id}")
 
+        summary_map: Dict[str, str] = {}
+        if is_summary_enabled():
+            print("[qa_gen_var] loading document summaries...")
+            summary_map = load_doc_summaries()
+            print(f"[qa_gen_var] loaded {len(summary_map):,} document summaries")
+
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
         skip_ids = get_processed_sample_ids(output_file)
@@ -326,7 +381,10 @@ class QAGenVarPhase(Phase):
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
         id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-        ds_iter = assert_hf_dataset_has_fields(ds_iter, [id_field], dataset_id=dataset_id)
+        doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+        ds_iter = assert_hf_dataset_has_fields(
+            ds_iter, [id_field, doc_name_field], dataset_id=dataset_id
+        )
 
         total = None if exhaustive else num_rows
         pbar = tqdm(desc="[qa_gen_var] generating", initial=next_row_id, total=total)
@@ -340,7 +398,7 @@ class QAGenVarPhase(Phase):
                 skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, next_row_id, output_file
+                client, cfg, model_id, samples, next_row_id, output_file, summary_map
             )
             if total is not None:
                 pbar.n = min(next_row_id, num_rows)

@@ -135,6 +135,26 @@ def assert_hf_dataset_has_fields(
 
 
 # Sample-text / sample-id helpers (multihop-aware)
+def make_chunk_entry(text: str, document_name: str) -> Dict[str, str]:
+    """Structured chunk value for JSONL sample_text dicts."""
+    return {"text": text, "document_name": document_name}
+
+
+def _chunk_text_and_name(value: Any) -> tuple[str, Optional[str]]:
+    if isinstance(value, dict) and "text" in value:
+        text = str(value.get("text", ""))
+        raw_name = value.get("document_name")
+        document_name = str(raw_name) if raw_name is not None else None
+        return text, document_name
+    return str(value), None
+
+
+def _format_chunk_header(chunk_id: Any, document_name: Optional[str] = None) -> str:
+    if document_name:
+        return f"[Chunk {chunk_id} | {document_name}]"
+    return f"[Chunk {chunk_id}]"
+
+
 def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
     """
     Render *sample_text* into a flat string suitable for prompt injection.
@@ -142,16 +162,17 @@ def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
     Accepts three shapes:
       - str:                 returned unchanged (legacy / single-chunk).
       - dict {id: text}:      rendered as labelled chunks (multihop).
-      - list[{chunk_id/hf_row_id, text}]: rendered as labelled chunks (legacy
-                              structured shape).
+      - dict {id: {text, document_name}}: chunk label includes document name.
+      - list[{chunk_id/hf_row_id, text, document_name?}]: labelled chunks.
     """
     if isinstance(sample_text, str):
         return sample_text
 
     parts: List[str] = []
     if isinstance(sample_text, dict):
-        for chunk_id, text in sample_text.items():
-            parts.append(f"[Chunk {chunk_id}]\n{text}")
+        for chunk_id, value in sample_text.items():
+            text, document_name = _chunk_text_and_name(value)
+            parts.append(f"{_format_chunk_header(chunk_id, document_name)}\n{text}")
     elif isinstance(sample_text, list):
         for entry in sample_text:
             if not isinstance(entry, dict):
@@ -159,11 +180,117 @@ def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
                 continue
             chunk_id = entry.get("chunk_id", entry.get("hf_row_id", "?"))
             text = entry.get("text", "")
-            parts.append(f"[Chunk {chunk_id}]\n{text}")
+            document_name = entry.get("document_name")
+            doc_name = str(document_name) if document_name is not None else None
+            parts.append(f"{_format_chunk_header(chunk_id, doc_name)}\n{text}")
     else:
         return str(sample_text)
 
     return "\n\n".join(parts)
+
+
+def sample_text_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+    """Build a {hf_row_id: {text, document_name}} mapping from Chroma chunk dicts."""
+    out: Dict[str, Dict[str, str]] = {}
+    for chunk in chunks:
+        hf_row_id = str(chunk["hf_row_id"])
+        document_name = chunk.get("document_name")
+        if document_name is None:
+            raise ValueError(
+                f"Chunk {hf_row_id!r} is missing document_name. "
+                f"Rebuild the Chroma collection with CHROMA_FORCE_REBUILD after setting "
+                f"DATASET_DOC_NAME_FIELD."
+            )
+        out[hf_row_id] = make_chunk_entry(chunk["text"], str(document_name))
+    return out
+
+
+def is_summary_enabled() -> bool:
+    """True when DATASET_SUMMARY_ENABLED is set in the environment."""
+    from SeedDataGen.config import DATASET_SUMMARY_ENABLED
+
+    return bool(os.environ.get("DATASET_SUMMARY_ENABLED", str(DATASET_SUMMARY_ENABLED)).lower() in (
+        "true",
+        "1",
+        "yes",
+    ))
+
+
+def format_doc_summary(summary: Optional[str]) -> str:
+    """Return a prompt block for *summary*, or '' when absent."""
+    if not summary or not str(summary).strip():
+        return ""
+    return f"Resumo do documento:\n{str(summary).strip()}\n\n"
+
+
+def format_doc_summaries_for_docs(summary_map: Dict[str, str], doc_ids: List[Any]) -> str:
+    """Join formatted summary blocks for unique *doc_ids* (preserves first-seen order)."""
+    parts: List[str] = []
+    seen: set = set()
+    for doc_id in doc_ids:
+        key = str(doc_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        block = format_doc_summary(summary_map.get(key))
+        if block:
+            parts.append(block.rstrip("\n"))
+    if not parts:
+        return ""
+    return "\n\n".join(parts) + "\n\n"
+
+
+def load_doc_summaries(
+    *,
+    dataset_id: Optional[str] = None,
+    dataset_subset: Optional[str] = None,
+    dataset_split: Optional[str] = None,
+    chunk_type_field: Optional[str] = None,
+    summary_value: Optional[str] = None,
+    doc_id_field: Optional[str] = None,
+    text_field: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Stream the HF dataset once and return {str(document_id): summary_text} for
+    rows whose *chunk_type_field* equals *summary_value*.
+    """
+    from datasets import load_dataset
+
+    from SeedDataGen.config import (
+        DATASET_CHUNK_TYPE_FIELD,
+        DATASET_DOC_ID_FIELD,
+        DATASET_ID,
+        DATASET_SPLIT,
+        DATASET_SUBSET,
+        DATASET_SUMMARY_TYPE_VALUE,
+        DATASET_TEXT_FIELD,
+    )
+
+    dataset_id = dataset_id or os.environ.get("DATASET_ID", DATASET_ID)
+    dataset_subset = dataset_subset or os.environ.get("DATASET_SUBSET", DATASET_SUBSET)
+    dataset_split = dataset_split or os.environ.get("DATASET_SPLIT", DATASET_SPLIT)
+    chunk_type_field = chunk_type_field or os.environ.get(
+        "DATASET_CHUNK_TYPE_FIELD", DATASET_CHUNK_TYPE_FIELD
+    )
+    summary_value = summary_value or os.environ.get(
+        "DATASET_SUMMARY_TYPE_VALUE", DATASET_SUMMARY_TYPE_VALUE
+    )
+    doc_id_field = doc_id_field or os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
+    text_field = text_field or os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+
+    ds = load_dataset(dataset_id, dataset_subset, split=dataset_split, streaming=True)
+    out: Dict[str, str] = {}
+    for rec in ds:
+        if rec.get(chunk_type_field) != summary_value:
+            continue
+        doc_id = rec.get(doc_id_field)
+        if doc_id is None:
+            continue
+        text = rec.get(text_field, "")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        out[str(doc_id)] = text.strip()
+    return out
 
 
 def get_processed_sample_ids(filepath: str) -> set:
