@@ -82,7 +82,7 @@ async def _llm_call(
     try:
         resp = await client.chat.completions.create(
             model=model_id,
-            messages=[{"role": "system", "content": prompt_text}],
+            messages=[{"role": "user", "content": prompt_text}],
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,

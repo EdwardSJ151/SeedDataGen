@@ -163,7 +163,7 @@ async def _generate_user_turn(
     try:
         resp = await client.chat.completions.create(
             model=model_id,
-            messages=[{"role": "system", "content": prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
@@ -198,7 +198,7 @@ async def _generate_assistant_turn(
     try:
         resp = await client.chat.completions.create(
             model=model_id,
-            messages=[{"role": "system", "content": prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
