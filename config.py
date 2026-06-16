@@ -50,8 +50,27 @@ DATASET_SUMMARY_ENABLED: bool = os.environ.get("DATASET_SUMMARY_ENABLED", "false
 DATASET_CHUNK_TYPE_FIELD: str = os.environ.get("DATASET_CHUNK_TYPE_FIELD", "chunk_type")
 DATASET_SUMMARY_TYPE_VALUE: str = os.environ.get("DATASET_SUMMARY_TYPE_VALUE", "summary")
 DATASET_DOC_ID_FIELD: str = os.environ.get("DATASET_DOC_ID_FIELD", "document_id")
-# HF column for human-readable document name (e.g. 'ND-9-3'). Required.
-DATASET_DOC_NAME_FIELD: str = require_env("DATASET_DOC_NAME_FIELD")
+# HF column for human-readable document name (e.g. 'ND-9-3'). Required at pipeline run time.
+# Read via get_dataset_doc_name_field() or os.environ — never require_env() at module scope.
+DATASET_DOC_NAME_FIELD: str = os.environ.get("DATASET_DOC_NAME_FIELD", "")
+
+# Keys that must be set (YAML env: or .env) before dataset / Chroma phases run.
+# run_pipeline bootstraps YAML env before importing this module; phases validate at run().
+REQUIRED_PIPELINE_ENV_VARS: tuple[str, ...] = ("DATASET_DOC_NAME_FIELD",)
+
+
+def get_dataset_doc_name_field() -> str:
+    """Return DATASET_DOC_NAME_FIELD from the environment (required when generators run)."""
+    return require_env("DATASET_DOC_NAME_FIELD")
+
+
+def validate_pipeline_env(
+    names: tuple[str, ...] = REQUIRED_PIPELINE_ENV_VARS,
+) -> None:
+    """Raise if any required pipeline env var is unset (call after YAML env is applied)."""
+    for name in names:
+        require_env(name)
+
 
 # Execution control (global defaults; phases may override via their own config)
 NUM_ROWS: int = int(os.environ.get("NUM_ROWS", "100"))

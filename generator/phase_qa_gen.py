@@ -30,7 +30,6 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
-    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
@@ -42,6 +41,8 @@ from SeedDataGen.config import (
     STOP_STRINGS,
     VLLM_API_KEY,
     VLLM_BASE_URL,
+    get_dataset_doc_name_field,
+    validate_pipeline_env,
 )
 from SeedDataGen.generator.prompts import QA_GENERATION_PROMPT
 from SeedDataGen.registry import register
@@ -100,7 +101,7 @@ def _stream_dataset():
 def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
     id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-    doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+    doc_name_field = get_dataset_doc_name_field()
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
     for stream_idx, rec in _enumerate_global(ds_iter):
@@ -251,6 +252,7 @@ class QAGenPhase(Phase):
         global _GLOBAL_STREAM_IDX
         _GLOBAL_STREAM_IDX = 0
 
+        validate_pipeline_env()
         cfg = QAGenConfig()
         num_rows: int = kwargs.get("num_rows", NUM_ROWS)
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)
@@ -268,7 +270,7 @@ class QAGenPhase(Phase):
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
         id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-        doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+        doc_name_field = get_dataset_doc_name_field()
         ds_iter = assert_hf_dataset_has_fields(
             ds_iter, [id_field, doc_name_field], dataset_id=dataset_id
         )

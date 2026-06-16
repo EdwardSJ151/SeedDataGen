@@ -33,7 +33,6 @@ from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
     DATASET_CHUNK_TYPE_FIELD,
     DATASET_DOC_ID_FIELD,
-    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
@@ -46,6 +45,8 @@ from SeedDataGen.config import (
     STOP_STRINGS,
     VLLM_API_KEY,
     VLLM_BASE_URL,
+    get_dataset_doc_name_field,
+    validate_pipeline_env,
 )
 from SeedDataGen.generator.prompts import QA_GEN_VAR_STYLE_INSTRUCTIONS, QA_GEN_VAR_SYSTEM_PROMPT
 from SeedDataGen.registry import register
@@ -133,7 +134,7 @@ def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
     id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
     doc_id_field = os.environ.get("DATASET_DOC_ID_FIELD", DATASET_DOC_ID_FIELD)
-    doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+    doc_name_field = get_dataset_doc_name_field()
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
     for stream_idx, rec in _enumerate_global(ds_iter):
@@ -342,6 +343,7 @@ class QAGenVarPhase(Phase):
         global _GLOBAL_STREAM_IDX
         _GLOBAL_STREAM_IDX = 0
 
+        validate_pipeline_env()
         cfg = QAGenVarConfig()
 
         if not cfg.question_styles:
@@ -381,7 +383,7 @@ class QAGenVarPhase(Phase):
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
         id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
-        doc_name_field = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+        doc_name_field = get_dataset_doc_name_field()
         ds_iter = assert_hf_dataset_has_fields(
             ds_iter, [id_field, doc_name_field], dataset_id=dataset_id
         )

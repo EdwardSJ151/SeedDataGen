@@ -22,11 +22,12 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
-    DATASET_DOC_NAME_FIELD,
     DATASET_ID,
     DATASET_SPLIT,
     DATASET_SUBSET,
     DATASET_TEXT_FIELD,
+    get_dataset_doc_name_field,
+    validate_pipeline_env,
 )
 from SeedDataGen.preprocess.chunk_index import (
     collection_exists,
@@ -75,6 +76,7 @@ class ChromaPreprocessPhase(Phase):
     output_schema = BaseRow  # not used for chaining; preprocess runs standalone
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
+        validate_pipeline_env()
         cfg = ChromaPreprocessConfig()
 
         if cfg.force_rebuild:
@@ -88,7 +90,7 @@ class ChromaPreprocessPhase(Phase):
             return
 
         text_col = cfg.metadata_text or os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
-        doc_name_col = os.environ.get("DATASET_DOC_NAME_FIELD", DATASET_DOC_NAME_FIELD)
+        doc_name_col = get_dataset_doc_name_field()
 
         collection = get_collection(cfg.vectorstore_name, cfg.persist_dir, cfg.embed_model)
         print(

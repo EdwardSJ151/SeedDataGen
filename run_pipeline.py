@@ -38,15 +38,73 @@ from typing import Any, Iterator, Optional
 
 import yaml
 
+_PHASE_PACKAGE = "SeedDataGen"
+_PHASE_DIR = Path(__file__).resolve().parent
+
+
+def _resolve_pipeline_path(pipeline_arg: str) -> Path:
+    """Resolve --pipeline the same way as the main CLI (cwd, then package dir)."""
+    p = Path(pipeline_arg)
+    if p.is_file():
+        return p.resolve()
+    for base in (Path.cwd(), _PHASE_DIR):
+        candidate = (base / pipeline_arg).resolve()
+        if candidate.is_file():
+            return candidate
+    return (_PHASE_DIR / pipeline_arg).resolve()
+
+
+def _load_yaml_global_env(path: Path) -> dict[str, str]:
+    """Return the top-level ``env:`` mapping from a pipeline YAML file."""
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    return {str(k): str(v) for k, v in (data.get("env") or {}).items()}
+
+
+def _apply_global_env(global_env: dict[str, str]) -> None:
+    """Apply top-level env: block to os.environ."""
+    for key, val in global_env.items():
+        os.environ[key] = str(val)
+
+
+def _bootstrap_pipeline_env(argv: list[str] | None = None) -> None:
+    """
+    Apply the YAML ``env:`` block before SeedDataGen.config is imported.
+
+    Pipeline YAML is applied again in ``main()``; this early pass mirrors the
+    8bbba82 / 4b5c5fd pattern — settings belong in os.environ at runtime, not import time.
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--pipeline",
+        default=str(_PHASE_DIR / "pipeline.yaml"),
+    )
+    args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
+    path = _resolve_pipeline_path(args.pipeline)
+    if not path.is_file():
+        return
+    _apply_global_env(_load_yaml_global_env(path))
+
+
+def _apply_pipeline_env_from_arg(pipeline_arg: str) -> None:
+    """Apply ``env:`` from the resolved pipeline file (authoritative in main())."""
+    path = _resolve_pipeline_path(pipeline_arg)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Pipeline file not found: {pipeline_arg!r} "
+            f"(resolved to {path}). Set --pipeline or run from the repo directory."
+        )
+    _apply_global_env(_load_yaml_global_env(path))
+
+
+_bootstrap_pipeline_env()
+
 from SeedDataGen.base_phase import Phase, PhaseRole
-from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL
+from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL, validate_pipeline_env
 from SeedDataGen.registry import get_phase, list_phases
 
 # Auto-discover and import all phase_*.py modules so their @register
 # decorators fire before we look anything up in the registry.
-_PHASE_PACKAGE = "SeedDataGen"
-_PHASE_DIR = Path(__file__).resolve().parent
-
 
 def _import_all_phases() -> None:
     # Recursive discovery so phases living in role subpackages (generator/,
@@ -124,12 +182,6 @@ def _load_multihop_yaml(
 
     global_env = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
     return preprocess_entry, tail, runs, global_env
-
-
-def _apply_global_env(global_env: dict[str, str]) -> None:
-    """Apply top-level env: block to os.environ before phases are imported."""
-    for key, val in global_env.items():
-        os.environ[key] = val
 
 
 # Per-phase config override (YAML config: block → temporary env vars)
@@ -538,6 +590,11 @@ async def _dry_run_legacy(
     print("No GENERATOR phase found in pipeline.")
 
 
+def _require_dataset_env() -> None:
+    """Fail fast when the pipeline YAML (or shell) omitted required dataset keys."""
+    validate_pipeline_env()
+
+
 # CLI
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -603,9 +660,9 @@ Examples:
 
     # Multi-run orchestrator format (preprocess / tail / runs)
     if _is_multi_run_yaml(args.pipeline):
+        _apply_pipeline_env_from_arg(args.pipeline)
         preprocess_entry, tail_entries, runs, global_env = _load_multihop_yaml(args.pipeline)
-        if global_env:
-            _apply_global_env(global_env)
+        _require_dataset_env()
         _import_all_phases()
 
         batch_size = (
@@ -650,10 +707,9 @@ Examples:
         return
 
     # Legacy single-pipeline format
+    _apply_pipeline_env_from_arg(args.pipeline)
     entries, global_env = _load_pipeline_yaml(args.pipeline)
-    if global_env:
-        _apply_global_env(global_env)
-
+    _require_dataset_env()
     _import_all_phases()
 
     # Resolve num_rows and batch_size after global env is applied
