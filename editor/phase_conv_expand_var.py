@@ -39,23 +39,29 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
-from SeedDataGen.prompts import (
+from SeedDataGen.editor.prompts import (
     ASSISTANT_TURN_PROMPT,
-    QA_GEN_VAR_STYLE_INSTRUCTIONS,
+    CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE,
+    CONV_EXPAND_USER_TURN_BY_GEN_TYPE,
     USER_TURN_VAR_DIVERSITY_PROMPT,
     USER_TURN_VAR_PROMPT,
 )
+from SeedDataGen.generator.prompts import QA_GEN_VAR_STYLE_INSTRUCTIONS
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import ConversationRow, StyledQARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
+    format_sample_text,
     format_user_history,
     get_last_processed_id,
     get_max_int_field,
+    get_sample_group_key,
     iter_jsonl_batches,
     write_jsonl_batch,
 )
+
+_DEFAULT_GEN_TYPE = "qa_gen_var"
 
 
 class ConvExpandVarConfig(BaseSettings):
@@ -103,6 +109,7 @@ async def _generate_user_turn(
     history_str: str,
     style: str,
     *,
+    gen_type: str,
     previous_questions: Optional[List[str]],
     temperature: float,
     top_p: float,
@@ -113,6 +120,8 @@ async def _generate_user_turn(
     When previous_questions is provided (non-naive mode, not the first pair),
     the diversity prompt is used instead of the plain style prompt so the model
     is also steered away from already-covered ground.
+    The naive (non-diversity) template is selected per *gen_type* so multihop
+    rows can use a multi-chunk-aware prompt.
     The assistant never sees this prompt.
     """
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, "")
@@ -125,7 +134,8 @@ async def _generate_user_turn(
             conversation_history=history_str,
         )
     else:
-        prompt = USER_TURN_VAR_PROMPT.format(
+        template = CONV_EXPAND_USER_TURN_BY_GEN_TYPE.get(gen_type, USER_TURN_VAR_PROMPT)
+        prompt = template.format(
             style_instruction=style_instruction,
             sample_text=sample_text,
             conversation_history=history_str,
@@ -155,12 +165,14 @@ async def _generate_assistant_turn(
     sample_text: str,
     history_str: str,
     *,
+    gen_type: str,
     temperature: float,
     top_p: float,
     max_tokens: int,
 ) -> Optional[str]:
     """Assistant turn — only sees the conversation history, never the style."""
-    prompt = ASSISTANT_TURN_PROMPT.format(
+    template = CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE.get(gen_type, ASSISTANT_TURN_PROMPT)
+    prompt = template.format(
         sample_text=sample_text,
         conversation_history=history_str,
     )
@@ -190,6 +202,7 @@ async def _expand_conversation(
     sample_text: str,
     qa: Dict[str, str],
     seed_style: str,
+    gen_type: str,
     *,
     previous_questions: Optional[List[str]] = None,
 ) -> Optional[List[Dict[str, str]]]:
@@ -207,6 +220,7 @@ async def _expand_conversation(
         user_msg = await _generate_user_turn(
             client, model_id,
             sample_text, user_history_str, style,
+            gen_type=gen_type,
             previous_questions=previous_questions if use_diversity else None,
             temperature=cfg.user_turn_temperature,
             top_p=cfg.user_turn_top_p,
@@ -220,6 +234,7 @@ async def _expand_conversation(
         asst_msg = await _generate_assistant_turn(
             client, model_id,
             sample_text, full_history_str,
+            gen_type=gen_type,
             temperature=cfg.assistant_turn_temperature,
             top_p=cfg.assistant_turn_top_p,
             max_tokens=cfg.assistant_turn_max_tokens,
@@ -247,36 +262,39 @@ async def _process_batch(
             async with sem:
                 return await _expand_conversation(
                     client, cfg, model_id,
-                    item["sample_text"],
+                    format_sample_text(item["sample_text"]),
                     {"question": item["question"], "answer": item["answer"]},
                     item["question_style"],
+                    item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
                 )
 
         results = await asyncio.gather(*[_one_naive(it) for it in batch])
         items_ordered = batch
 
     else:
-        # Group by sample_id, sort by id so earlier pairs are processed first.
-        groups: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        # Group by sample group key, sort by id so earlier pairs are processed
+        # first.  The group key handles list-valued (multihop) sample_id.
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for item in batch:
-            groups[item["sample_id"]].append(item)
+            groups[get_sample_group_key(item["sample_id"])].append(item)
         for g in groups.values():
             g.sort(key=lambda x: x["id"])
 
         items_ordered = []
-        previous_by_sample: Dict[int, List[str]] = defaultdict(list)
-        for sid in sorted(groups):
-            for item in groups[sid]:
-                items_ordered.append((item, list(previous_by_sample[sid])))
-                previous_by_sample[sid].append(item["question"])
+        previous_by_sample: Dict[str, List[str]] = defaultdict(list)
+        for key in sorted(groups):
+            for item in groups[key]:
+                items_ordered.append((item, list(previous_by_sample[key])))
+                previous_by_sample[key].append(item["question"])
 
         async def _one_div(item: Dict[str, Any], prev_qs: List[str]):
             async with sem:
                 return await _expand_conversation(
                     client, cfg, model_id,
-                    item["sample_text"],
+                    format_sample_text(item["sample_text"]),
                     {"question": item["question"], "answer": item["answer"]},
                     item["question_style"],
+                    item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
                     previous_questions=prev_qs if prev_qs else None,
                 )
 
@@ -290,12 +308,12 @@ async def _process_batch(
             max_input_id = item["id"]
         if msgs is None or len(msgs) < 4:
             continue
+        # Full passthrough: preserve every upstream field (GEN_TYPE, num_chunks,
+        # similarity_* etc.), overriding only id/input_id and attaching messages.
         rows.append({
+            **item,
             "id": next_id,
             "input_id": item["id"],
-            "origin_id": item["origin_id"],
-            "sample_id": item["sample_id"],
-            "sample_text": item["sample_text"],
             "messages": msgs,
         })
         next_id += 1

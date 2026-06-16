@@ -1,0 +1,89 @@
+# SeedDataGen multi-run pipeline (multihop extension).
+#
+# This format runs several full pipelines sequentially from a single YAML.
+# A one-time `preprocess` builds the shared Chroma vectorstore; each entry under
+# `runs` is a full pipeline (generator → shared `tail`) writing into its own
+# output_dir.  Combine the per-run outputs afterwards with merge_runs.py:
+#
+#   python -m SeedDataGen.merge_runs out/*/final.jsonl -o combined/final.jsonl
+#
+# Config keys are passed verbatim as environment variables (no case folding), so
+# they must match the phase BaseSettings env var names exactly.
+
+env:
+  VLLM_BASE_URL: "http://10.100.0.122:8026/v1"
+  DATASET_ID: "dataset"
+  DATASET_SPLIT: "train"
+  DATASET_TEXT_FIELD: "text"              # HF chunk text column (qa_gen_var + chroma_preprocess)
+  DATASET_ID_FIELD: "id"                  # HF row id (required; no fallback)
+  DATASET_MAX_CHARS: "1000000"
+
+preprocess:
+  phase: chroma_preprocess
+  config:
+    CHROMA_VECTORSTORE_NAME: "store"
+    CHROMA_PERSIST_DIR: ".cache/chroma"
+    CHROMA_METADATA_HF_ROW_ID: "id"        # required; stored as Chroma id + hf_row_id
+    CHROMA_METADATA_DOC_ID: "document_id"  # groups chunks for local multihop windows
+    CHROMA_METADATA_CHUNK_INDEX: "chunk_index"  # required; order within document_id
+    # CHROMA_METADATA_TEXT omitted — defaults to DATASET_TEXT_FIELD
+    CHROMA_EMBED_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
+    CHROMA_FORCE_REBUILD: false
+
+# Shared downstream phases appended after every run's generator.
+tail:
+  - phase: qa_filter
+    output: qa_filtered.jsonl
+  - phase: conv_expand_var
+    output: conv_expanded.jsonl
+    config:
+      CONV_EXPAND_VAR_QUESTION_STYLES: "easy,medium,hard,extra_hard"
+      CONV_EXPAND_VAR_N_USER_TURNS_MIN: 3
+      CONV_EXPAND_VAR_N_USER_TURNS_MAX: 3
+      CONV_EXPAND_VAR_NAIVE_GEN: false
+  - phase: conv_filter
+    output: conv_filtered.jsonl
+  - phase: judge
+    output: judged.jsonl
+  - phase: embed_filter
+    output: final.jsonl
+
+runs:
+  - generator: qa_gen_var
+    output_dir: out/qa_gen_var/
+    config:
+      NUM_ROWS: "528352"
+      QA_GEN_VAR_QUESTION_STYLES: "easy,medium,hard,extra_hard"
+
+  - generator: qa_local_multihop
+    output_dir: out/qa_local_multihop/
+    config:
+      NUM_ROWS: "-1"                          # exhaustive: every window
+      CHROMA_VECTORSTORE_NAME: "store"
+      QA_LOCAL_MULTIHOP_NUM_CHUNKS: 3
+      QA_LOCAL_MULTIHOP_WINDOW_STRIDE: 1
+      QA_GEN_VAR_QUESTION_STYLES: "easy,medium,hard,extra_hard"
+
+  - generator: qa_similarity_multihop
+    output_dir: out/qa_similarity_multihop/
+    config:
+      NUM_ROWS: "-1"                          # exhaustive: every valid group
+      CHROMA_VECTORSTORE_NAME: "store"
+      QA_SIMILARITY_MULTIHOP_NUM_CHUNKS: 3
+      QA_SIMILARITY_MULTIHOP_DOC_CONSTRAINT: "different"
+      QA_SIMILARITY_MULTIHOP_MIN_DOCS: 2
+      QA_GEN_VAR_QUESTION_STYLES: "easy,medium,hard,extra_hard"   # fallback styles
+      # QA_SIMILARITY_MULTIHOP_JOBS is a list and is passed to the generator as
+      # kwargs (not env). Each job may override the styles it generates.
+      QA_SIMILARITY_MULTIHOP_JOBS:
+        - QA_SIMILARITY_MULTIHOP_MODE: "above"
+          QA_SIMILARITY_MULTIHOP_THRESHOLD: 0.80
+          QA_GEN_VAR_QUESTION_STYLES: "easy,medium,hard"
+        - QA_SIMILARITY_MULTIHOP_MODE: "range"
+          QA_SIMILARITY_MULTIHOP_MIN: 0.30
+          QA_SIMILARITY_MULTIHOP_MAX: 0.50
+          QA_GEN_VAR_QUESTION_STYLES: "easy,medium"
+        - QA_SIMILARITY_MULTIHOP_MODE: "below"
+          QA_SIMILARITY_MULTIHOP_THRESHOLD: 0.30
+          QA_SIMILARITY_MULTIHOP_MIN_MATCHING_WORDS: 10
+          QA_GEN_VAR_QUESTION_STYLES: "hard"

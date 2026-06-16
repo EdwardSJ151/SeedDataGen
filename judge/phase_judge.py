@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
-from SeedDataGen.prompts import JUDGE_PROMPT
+from SeedDataGen.judge.prompts import JUDGE_PROMPT
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import ConversationRow, JudgedConversationRow
 from SeedDataGen.utils import (

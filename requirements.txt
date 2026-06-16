@@ -4,3 +4,7 @@ tqdm
 datasets
 numpy
 sentence-transformers
+pydantic
+pydantic-settings
+pyyaml
+chromadb

@@ -1,6 +1,10 @@
 """
 Phase: conv_expand
 
+DEPRECATED: prefer ``conv_expand_var``, which supports style cycling, GEN_TYPE
+prompt routing, and multi-chunk (multihop) contexts.  This phase is retained for
+backwards compatibility with legacy single-style pipelines only.
+
 Initialises a conversation from each QA pair, then expands it by generating
 N additional user → assistant rounds via the LLM.
 
@@ -30,7 +34,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
-from SeedDataGen.prompts import (
+from SeedDataGen.editor.prompts import (
     ASSISTANT_TURN_PROMPT,
     USER_TURN_DIVERSITY_PROMPT,
     USER_TURN_PROMPT,

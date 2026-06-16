@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 
 class PhaseRole(str, Enum):
+    PREPROCESS = "preprocess"
     GENERATOR = "generator"
     EDITOR = "editor"
     FILTER = "filter"
@@ -28,6 +29,8 @@ class PhaseRole(str, Enum):
     DEDUP = "dedup"
 
 
+# PREPROCESS is intentionally absent: it runs once outside the generator → tail
+# chain and is never validated as a consecutive transition.
 COMPATIBLE_TRANSITIONS: dict[PhaseRole, Set[PhaseRole]] = {
     PhaseRole.GENERATOR: {PhaseRole.EDITOR, PhaseRole.FILTER, PhaseRole.JUDGE, PhaseRole.DEDUP},
     PhaseRole.EDITOR: {PhaseRole.EDITOR, PhaseRole.FILTER, PhaseRole.JUDGE, PhaseRole.DEDUP},
@@ -78,6 +81,16 @@ class Phase(ABC):
 
     def describe_prompts(self) -> List[Tuple[str, str]]:
         return []
+
+    async def estimate(self, **kwargs) -> Optional[int]:
+        """
+        Return the number of QA rows this generator would emit without making
+        any LLM calls, or None if no estimate is available.
+
+        Only GENERATOR phases override this.  The default returns None.
+        kwargs mirrors run(): num_rows, batch_size, similarity_jobs, etc.
+        """
+        return None
 
     @abstractmethod
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:

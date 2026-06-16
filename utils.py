@@ -8,7 +8,7 @@ conversation formatting, score parsing, and Pydantic schema helpers.
 import json
 import os
 import re
-from typing import Dict, Iterator, List, Optional, Type
+from typing import Any, Dict, Iterator, List, Optional, Type, Union
 
 from pydantic import BaseModel
 
@@ -81,6 +81,127 @@ def count_jsonl_lines(filepath: str) -> int:
         return 0
     with open(filepath, "r", encoding="utf-8") as f:
         return sum(1 for _ in f)
+
+
+# HuggingFace dataset field validation
+def require_hf_field(rec: Dict, field: str, *, row_label: str = "row") -> Any:
+    """
+    Return ``rec[field]`` or raise ValueError if the column is absent or None.
+
+    Used instead of silent fallbacks (e.g. streaming index) so misconfigured
+    dataset column mappings fail fast.
+    """
+    if field not in rec or rec[field] is None:
+        keys = sorted(rec.keys())
+        raise ValueError(
+            f"Required HF dataset column '{field}' is missing on {row_label}. "
+            f"Available columns: {keys}. "
+            f"Set DATASET_ID_FIELD / CHROMA_METADATA_* in the pipeline YAML to match "
+            f"the dataset schema."
+        )
+    return rec[field]
+
+
+def require_hf_int_field(rec: Dict, field: str, *, row_label: str = "row") -> int:
+    """Like require_hf_field but coerces the value to int."""
+    raw = require_hf_field(rec, field, row_label=row_label)
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"HF dataset column '{field}' must be an integer on {row_label}, got {raw!r}"
+        ) from exc
+
+
+def assert_hf_dataset_has_fields(
+    ds_iter: Iterator,
+    fields: List[str],
+    *,
+    dataset_id: str,
+) -> Iterator:
+    """
+    Validate that the first streamed row contains all *fields*, then re-yield the
+    full iterator.  Raises ValueError on an empty dataset or missing columns.
+    """
+    iterator = iter(ds_iter)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        raise ValueError(f"HF dataset {dataset_id!r} is empty — nothing to process.")
+    for field in fields:
+        require_hf_field(first, field, row_label="first row")
+    yield first
+    yield from iterator
+
+
+# Sample-text / sample-id helpers (multihop-aware)
+def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
+    """
+    Render *sample_text* into a flat string suitable for prompt injection.
+
+    Accepts three shapes:
+      - str:                 returned unchanged (legacy / single-chunk).
+      - dict {id: text}:      rendered as labelled chunks (multihop).
+      - list[{chunk_id/hf_row_id, text}]: rendered as labelled chunks (legacy
+                              structured shape).
+    """
+    if isinstance(sample_text, str):
+        return sample_text
+
+    parts: List[str] = []
+    if isinstance(sample_text, dict):
+        for chunk_id, text in sample_text.items():
+            parts.append(f"[Chunk {chunk_id}]\n{text}")
+    elif isinstance(sample_text, list):
+        for entry in sample_text:
+            if not isinstance(entry, dict):
+                parts.append(str(entry))
+                continue
+            chunk_id = entry.get("chunk_id", entry.get("hf_row_id", "?"))
+            text = entry.get("text", "")
+            parts.append(f"[Chunk {chunk_id}]\n{text}")
+    else:
+        return str(sample_text)
+
+    return "\n\n".join(parts)
+
+
+def get_processed_sample_ids(filepath: str) -> set:
+    """
+    Return the set of all sample ids already present in *filepath*.
+
+    Flattens list-valued sample_id (multihop rows) and includes scalar
+    sample_id (single-chunk rows), so generators can skip already-processed
+    source records regardless of row shape.
+    """
+    seen: set = set()
+    if not os.path.exists(filepath):
+        return seen
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sid = obj.get("sample_id")
+            if isinstance(sid, list):
+                seen.update(str(s) for s in sid)
+            elif sid is not None:
+                seen.add(str(sid))
+    return seen
+
+
+def get_sample_group_key(sample_id: Union[int, List[int]]) -> str:
+    """
+    Stable grouping key derived from *sample_id*.
+
+    Phases that group rows (qa_filter, conv_expand_var diversity, embed_filter)
+    use this instead of the raw sample_id, since multihop rows carry a list of
+    HF row ids that cannot be used as a dict key directly.
+    """
+    if isinstance(sample_id, list):
+        return "|".join(str(s) for s in sorted(sample_id))
+    return str(sample_id)
 
 
 # Pydantic schema helpers

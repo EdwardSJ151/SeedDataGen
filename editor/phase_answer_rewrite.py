@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
-from SeedDataGen.prompts import ANSWER_REWRITE_PROMPT
+from SeedDataGen.editor.prompts import ANSWER_REWRITE_PROMPT
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import QARow
 from SeedDataGen.utils import (

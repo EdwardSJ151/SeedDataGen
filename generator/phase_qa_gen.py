@@ -7,13 +7,20 @@ pairs and writes one QARow per pair.
 
 Role:   GENERATOR
 Input:  HuggingFace dataset (streaming)
-Output: QARow  (id, origin_id, sample_id, sample_text, question, answer)
+Output: QARow  (id, origin_id, sample_id, sample_text, question, answer, ...)
+
+Row shape:
+  - sample_id   : [hf_row_id]                  (list with the single source id)
+  - sample_text : {str(hf_row_id): text}       (dict keyed by source id)
+  - GEN_TYPE    : "qa_gen", num_chunks=1, doc_constraint=None
 
 origin_id equals id at generation time and is preserved unchanged through all
-downstream phases.
+downstream phases.  hf_row_id is read from DATASET_ID_FIELD, falling back to the
+streaming index when that column is absent.
 """
 
 import asyncio
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +31,7 @@ from tqdm import tqdm
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
     DATASET_ID,
+    DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
     DATASET_MIN_CHARS,
     DATASET_SPLIT,
@@ -34,10 +42,19 @@ from SeedDataGen.config import (
     VLLM_API_KEY,
     VLLM_BASE_URL,
 )
-from SeedDataGen.prompts import QA_GENERATION_PROMPT
+from SeedDataGen.generator.prompts import QA_GENERATION_PROMPT
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import QARow
-from SeedDataGen.utils import get_last_processed_id, get_max_int_field, write_jsonl_batch, parse_qa_pairs
+from SeedDataGen.utils import (
+    assert_hf_dataset_has_fields,
+    get_last_processed_id,
+    get_processed_sample_ids,
+    parse_qa_pairs,
+    require_hf_field,
+    write_jsonl_batch,
+)
+
+GEN_TYPE = "qa_gen"
 
 
 class QAGenConfig(BaseSettings):
@@ -77,46 +94,36 @@ def _stream_dataset():
     return iter(ds)
 
 
-def _next_valid_samples(ds_iter, n: int) -> List[Dict[str, Any]]:
+def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+    id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
-    for rec in ds_iter:
+    for stream_idx, rec in _enumerate_global(ds_iter):
         txt = rec.get(text_field, "")
         if not isinstance(txt, str):
             continue
         txt = _truncate(txt)
         if len(txt) < min_chars:
             continue
-        out.append({"sample_text": txt, "title": rec.get("title", "")})
+        hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
+        if hf_row_id in skip_ids:
+            continue
+        out.append({"hf_row_id": hf_row_id, "sample_text": txt})
         if len(out) >= n:
             break
     return out
 
 
-# LLM call
-async def _generate_qa(
-    client: AsyncOpenAI,
-    cfg: QAGenConfig,
-    sample_text: str,
-) -> Optional[str]:
-    prompt = QA_GENERATION_PROMPT.format(sample_text=sample_text)
-    try:
-        resp = await client.chat.completions.create(
-            model=(await client.models.list()).data[0].id,
-            messages=[{"role": "system", "content": prompt}],
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
-            max_tokens=cfg.max_tokens,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": False},
-                "stop": STOP_STRINGS,
-            },
-        )
-        return resp.choices[0].message.content or ""
-    except Exception as e:
-        print(f"[qa_gen] LLM error: {e}")
-        return None
+# Global stream counter so the streaming index is stable across batches.
+_GLOBAL_STREAM_IDX = 0
+
+
+def _enumerate_global(ds_iter):
+    global _GLOBAL_STREAM_IDX
+    for rec in ds_iter:
+        yield _GLOBAL_STREAM_IDX, rec
+        _GLOBAL_STREAM_IDX += 1
 
 
 # Batch processing
@@ -125,7 +132,6 @@ async def _process_batch(
     cfg: QAGenConfig,
     model_id: str,
     samples: List[Dict[str, Any]],
-    sample_id_start: int,
     next_row_id: int,
     output_file: str,
 ) -> int:
@@ -154,19 +160,21 @@ async def _process_batch(
     raw_outputs = await asyncio.gather(*[_gen(s) for s in samples])
 
     rows: List[Dict[str, Any]] = []
-    for idx, (sample, raw) in enumerate(zip(samples, raw_outputs)):
+    for sample, raw in zip(samples, raw_outputs):
         if raw is None:
             continue
-        qa_pairs = parse_qa_pairs(raw)
-        sample_id = sample_id_start + idx
-        for qa in qa_pairs:
+        hf_row_id = sample["hf_row_id"]
+        for qa in parse_qa_pairs(raw):
             rows.append({
                 "id": next_row_id,
                 "origin_id": next_row_id,
-                "sample_id": sample_id,
-                "sample_text": sample["sample_text"],
+                "sample_id": [hf_row_id],
+                "sample_text": {hf_row_id: sample["sample_text"]},
                 "question": qa["question"],
                 "answer": qa["answer"],
+                "GEN_TYPE": GEN_TYPE,
+                "num_chunks": 1,
+                "doc_constraint": None,
             })
             next_row_id += 1
 
@@ -183,15 +191,60 @@ class QAGenPhase(Phase):
     input_schema = None
     output_schema = QARow
 
+    async def estimate(self, **kwargs) -> Optional[int]:
+        """
+        Count valid HF chunks without LLM calls.
+        qa_gen produces 1–5 QA pairs per chunk, so exact row count depends on
+        LLM output.  We return the LLM call count and print the row range.
+        If NUM_ROWS is set (not exhaustive), we return NUM_ROWS as the cap.
+        """
+        num_rows = int(kwargs.get("num_rows", NUM_ROWS))
+        exhaustive = num_rows < 0
+
+        dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
+        dataset_subset = os.environ.get("DATASET_SUBSET", DATASET_SUBSET)
+        dataset_split = os.environ.get("DATASET_SPLIT", DATASET_SPLIT)
+        text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+        id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+        min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
+
+        # If not exhaustive, the generator stops at num_rows QA rows regardless
+        # of how many chunks it processes, so the answer is simply num_rows.
+        if not exhaustive:
+            print(f"  [qa_gen] capped at NUM_ROWS={num_rows:,} QA rows (1–5 pairs/chunk)")
+            return num_rows
+
+        from datasets import load_dataset
+        ds = load_dataset(dataset_id, dataset_subset, split=dataset_split, streaming=True)
+        print(f"  [qa_gen] scanning {dataset_id} for valid chunks...", flush=True)
+        valid = 0
+        for rec in ds:
+            txt = rec.get(text_field, "")
+            if not isinstance(txt, str):
+                continue
+            if len(" ".join(txt.split())) < min_chars:
+                continue
+            if rec.get(id_field) is None:
+                continue
+            valid += 1
+
+        lo, hi = valid * 1, valid * 5
+        print(f"  [qa_gen] {valid:,} valid chunks → {lo:,}–{hi:,} QA rows (1–5 pairs/chunk)")
+        # Return midpoint estimate; caller prints it
+        return valid * 3
+
     def describe_prompts(self):
-        cfg = QAGenConfig()
         prompt = QA_GENERATION_PROMPT.format(sample_text="[SAMPLE_TEXT]")
         return [("qa_gen / main prompt (user)", prompt)]
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
+        global _GLOBAL_STREAM_IDX
+        _GLOBAL_STREAM_IDX = 0
+
         cfg = QAGenConfig()
         num_rows: int = kwargs.get("num_rows", NUM_ROWS)
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)
+        exhaustive = num_rows is not None and int(num_rows) < 0
 
         client = AsyncOpenAI(base_url=VLLM_BASE_URL, api_key=VLLM_API_KEY)
         models = await client.models.list()
@@ -200,34 +253,31 @@ class QAGenPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-
-        last_sample_id = get_max_int_field(output_file, "sample_id")
-        samples_to_skip = last_sample_id + 1 if last_sample_id >= 0 else 0
+        skip_ids = get_processed_sample_ids(output_file)
 
         ds_iter = _stream_dataset()
+        dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
+        id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+        ds_iter = assert_hf_dataset_has_fields(ds_iter, [id_field], dataset_id=dataset_id)
 
-        skipped = 0
-        for rec in ds_iter:
-            txt = rec.get(DATASET_TEXT_FIELD, "")
-            if isinstance(txt, str) and len(_normalize(txt)) >= DATASET_MIN_CHARS:
-                skipped += 1
-                if skipped >= samples_to_skip:
-                    break
+        total = None if exhaustive else num_rows
+        pbar = tqdm(desc="[qa_gen] generating", initial=next_row_id, total=total)
 
-        sample_id_counter = samples_to_skip
-        pbar = tqdm(desc="[qa_gen] generating", initial=next_row_id, total=num_rows)
-
-        while next_row_id < num_rows:
-            samples = _next_valid_samples(ds_iter, batch_size)
+        while exhaustive or next_row_id < num_rows:
+            samples = _next_valid_samples(ds_iter, batch_size, skip_ids)
             if not samples:
                 print("[qa_gen] Dataset exhausted.")
                 break
+            for s in samples:
+                skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, sample_id_counter, next_row_id, output_file
+                client, cfg, model_id, samples, next_row_id, output_file
             )
-            sample_id_counter += len(samples)
-            pbar.n = min(next_row_id, num_rows)
+            if total is not None:
+                pbar.n = min(next_row_id, num_rows)
+            else:
+                pbar.n = next_row_id
             pbar.refresh()
 
         pbar.close()

@@ -5,22 +5,22 @@ Style-constrained QA generation.  For each document, makes one LLM call per
 configured style and extracts exactly one QA pair per call.  The number of QA
 pairs produced per document equals the number of styles configured.
 
-Available built-in styles (keys in QA_GEN_VAR_STYLE_INSTRUCTIONS):
-  - general: broad question about the main topic
-  - specific: focused on a concrete detail or fact
-  - compositional: requires combining multiple pieces of information
-  - comparative: compares two concepts or entities from the text
-
-Additional styles can be added to QA_GEN_VAR_STYLE_INSTRUCTIONS in prompts.py.
+Available built-in styles live in QA_GEN_VAR_STYLE_INSTRUCTIONS
+(SeedDataGen/generator/prompts.py).
 
 Role:   GENERATOR
 Input:  HuggingFace dataset (streaming)
-Output: QARow  — fully compatible with qa_filter and all downstream phases.
-        Each row carries an extra `question_style` field recording which style
-        produced it (preserved through downstream phases via extra='ignore').
+Output: StyledQARow  — fully compatible with qa_filter and all downstream phases.
+
+Row shape:
+  - sample_id   : [hf_row_id]
+  - sample_text : {str(hf_row_id): text}
+  - GEN_TYPE    : "qa_gen_var", num_chunks=1, doc_constraint=None
+  - question_style : the style that produced the pair
 """
 
 import asyncio
+import math
 import os
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +32,7 @@ from tqdm import tqdm
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import (
     DATASET_ID,
+    DATASET_ID_FIELD,
     DATASET_MAX_CHARS,
     DATASET_MIN_CHARS,
     DATASET_SPLIT,
@@ -42,10 +43,19 @@ from SeedDataGen.config import (
     VLLM_API_KEY,
     VLLM_BASE_URL,
 )
-from SeedDataGen.prompts import QA_GEN_VAR_STYLE_INSTRUCTIONS, QA_GEN_VAR_SYSTEM_PROMPT
+from SeedDataGen.generator.prompts import QA_GEN_VAR_STYLE_INSTRUCTIONS, QA_GEN_VAR_SYSTEM_PROMPT
 from SeedDataGen.registry import register
-from SeedDataGen.schemas import QARow, StyledQARow
-from SeedDataGen.utils import get_last_processed_id, get_max_int_field, parse_qa_pairs, write_jsonl_batch
+from SeedDataGen.schemas import StyledQARow
+from SeedDataGen.utils import (
+    assert_hf_dataset_has_fields,
+    get_last_processed_id,
+    get_processed_sample_ids,
+    parse_qa_pairs,
+    require_hf_field,
+    write_jsonl_batch,
+)
+
+GEN_TYPE = "qa_gen_var"
 
 
 class QAGenVarConfig(BaseSettings):
@@ -66,7 +76,7 @@ class QAGenVarConfig(BaseSettings):
         return v
 
 
-# Text helpers (identical to phase_qa_gen)
+# Text helpers
 def _normalize(s: str) -> str:
     return " ".join(s.split())
 
@@ -93,18 +103,33 @@ def _stream_dataset():
     return iter(ds)
 
 
-def _next_valid_samples(ds_iter, n: int) -> List[Dict[str, Any]]:
+# Global stream counter so the streaming index is stable across batches.
+_GLOBAL_STREAM_IDX = 0
+
+
+def _enumerate_global(ds_iter):
+    global _GLOBAL_STREAM_IDX
+    for rec in ds_iter:
+        yield _GLOBAL_STREAM_IDX, rec
+        _GLOBAL_STREAM_IDX += 1
+
+
+def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
     text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+    id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
     min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
     out: List[Dict[str, Any]] = []
-    for rec in ds_iter:
+    for stream_idx, rec in _enumerate_global(ds_iter):
         txt = rec.get(text_field, "")
         if not isinstance(txt, str):
             continue
         txt = _truncate(txt)
         if len(txt) < min_chars:
             continue
-        out.append({"sample_text": txt, "title": rec.get("title", "")})
+        hf_row_id = str(require_hf_field(rec, id_field, row_label=f"row {stream_idx}"))
+        if hf_row_id in skip_ids:
+            continue
+        out.append({"hf_row_id": hf_row_id, "sample_text": txt})
         if len(out) >= n:
             break
     return out
@@ -151,13 +176,11 @@ async def _process_batch(
     cfg: QAGenVarConfig,
     model_id: str,
     samples: List[Dict[str, Any]],
-    sample_id_start: int,
     next_row_id: int,
     output_file: str,
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
-    # Build one task per (sample, style) pair
     tasks = []
     for sample in samples:
         for style in cfg.question_styles:
@@ -174,19 +197,21 @@ async def _process_batch(
         if raw is None:
             continue
         pairs = parse_qa_pairs(raw)
-        # We expect exactly one pair; take the first one if the model produced more.
         if not pairs:
             continue
         qa = pairs[0]
-        sample_idx = samples.index(sample)
+        hf_row_id = sample["hf_row_id"]
         rows.append({
             "id": next_row_id,
             "origin_id": next_row_id,
-            "sample_id": sample_id_start + sample_idx,
-            "sample_text": sample["sample_text"],
+            "sample_id": [hf_row_id],
+            "sample_text": {hf_row_id: sample["sample_text"]},
             "question": qa["question"],
             "answer": qa["answer"],
             "question_style": style,
+            "GEN_TYPE": GEN_TYPE,
+            "num_chunks": 1,
+            "doc_constraint": None,
         })
         next_row_id += 1
 
@@ -203,6 +228,55 @@ class QAGenVarPhase(Phase):
     input_schema = None
     output_schema = StyledQARow
 
+    async def estimate(self, **kwargs) -> Optional[int]:
+        """
+        Count valid HF chunks without LLM calls.
+        Each chunk produces exactly one QA row per style, so:
+            rows = min(valid_chunks × n_styles, NUM_ROWS)
+        Streams the full dataset when NUM_ROWS=-1 (exhaustive).
+        """
+        cfg = QAGenVarConfig()
+        n_styles = len(cfg.question_styles)
+        num_rows = int(kwargs.get("num_rows", NUM_ROWS))
+        exhaustive = num_rows < 0
+
+        dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
+        dataset_subset = os.environ.get("DATASET_SUBSET", DATASET_SUBSET)
+        dataset_split = os.environ.get("DATASET_SPLIT", DATASET_SPLIT)
+        text_field = os.environ.get("DATASET_TEXT_FIELD", DATASET_TEXT_FIELD)
+        id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+        min_chars = int(os.environ.get("DATASET_MIN_CHARS", DATASET_MIN_CHARS))
+
+        # Stop streaming once we have enough chunks to fill NUM_ROWS.
+        need_chunks = None if exhaustive else math.ceil(num_rows / max(n_styles, 1))
+
+        from datasets import load_dataset
+        ds = load_dataset(dataset_id, dataset_subset, split=dataset_split, streaming=True)
+
+        print(f"  [qa_gen_var] scanning {dataset_id} for valid chunks...", flush=True)
+        valid = 0
+        for rec in ds:
+            txt = rec.get(text_field, "")
+            if not isinstance(txt, str):
+                continue
+            if len(" ".join(txt.split())) < min_chars:
+                continue
+            if rec.get(id_field) is None:
+                continue
+            valid += 1
+            if need_chunks and valid >= need_chunks:
+                break
+
+        rows = valid * n_styles
+        if not exhaustive:
+            rows = min(rows, num_rows)
+
+        print(
+            f"  [qa_gen_var] {valid:,} valid chunks × {n_styles} styles"
+            + (f" (capped at NUM_ROWS={num_rows:,})" if not exhaustive and rows < valid * n_styles else "")
+        )
+        return rows
+
     def describe_prompts(self):
         cfg = QAGenVarConfig()
         prompts = []
@@ -216,6 +290,9 @@ class QAGenVarPhase(Phase):
         return prompts
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
+        global _GLOBAL_STREAM_IDX
+        _GLOBAL_STREAM_IDX = 0
+
         cfg = QAGenVarConfig()
 
         if not cfg.question_styles:
@@ -230,6 +307,7 @@ class QAGenVarPhase(Phase):
 
         num_rows: int = kwargs.get("num_rows", NUM_ROWS)
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)
+        exhaustive = num_rows is not None and int(num_rows) < 0
 
         print(
             f"[qa_gen_var] styles: {cfg.question_styles}  "
@@ -243,34 +321,31 @@ class QAGenVarPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-
-        last_sample_id = get_max_int_field(output_file, "sample_id")
-        samples_to_skip = last_sample_id + 1 if last_sample_id >= 0 else 0
+        skip_ids = get_processed_sample_ids(output_file)
 
         ds_iter = _stream_dataset()
+        dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
+        id_field = os.environ.get("DATASET_ID_FIELD", DATASET_ID_FIELD)
+        ds_iter = assert_hf_dataset_has_fields(ds_iter, [id_field], dataset_id=dataset_id)
 
-        skipped = 0
-        for rec in ds_iter:
-            txt = rec.get(DATASET_TEXT_FIELD, "")
-            if isinstance(txt, str) and len(_normalize(txt)) >= DATASET_MIN_CHARS:
-                skipped += 1
-                if skipped >= samples_to_skip:
-                    break
+        total = None if exhaustive else num_rows
+        pbar = tqdm(desc="[qa_gen_var] generating", initial=next_row_id, total=total)
 
-        sample_id_counter = samples_to_skip
-        pbar = tqdm(desc="[qa_gen_var] generating", initial=next_row_id, total=num_rows)
-
-        while next_row_id < num_rows:
-            samples = _next_valid_samples(ds_iter, batch_size)
+        while exhaustive or next_row_id < num_rows:
+            samples = _next_valid_samples(ds_iter, batch_size, skip_ids)
             if not samples:
                 print("[qa_gen_var] Dataset exhausted.")
                 break
+            for s in samples:
+                skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, sample_id_counter, next_row_id, output_file
+                client, cfg, model_id, samples, next_row_id, output_file
             )
-            sample_id_counter += len(samples)
-            pbar.n = min(next_row_id, num_rows)
+            if total is not None:
+                pbar.n = min(next_row_id, num_rows)
+            else:
+                pbar.n = next_row_id
             pbar.refresh()
 
         pbar.close()

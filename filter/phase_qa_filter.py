@@ -25,6 +25,7 @@ from SeedDataGen.utils import (
     count_jsonl_lines,
     get_last_processed_id,
     get_max_int_field,
+    get_sample_group_key,
     iter_jsonl_batches,
     levenshtein,
     write_jsonl_batch,
@@ -75,17 +76,17 @@ class QAFilterPhase(Phase):
         last_input_id = get_max_int_field(output_file, "input_id")
         resume_from = last_input_id + 1 if last_input_id >= 0 else 0
 
-        groups: Dict[int, List[Dict]] = defaultdict(list)
+        groups: Dict[str, List[Dict]] = defaultdict(list)
         for batch in iter_jsonl_batches(input_file, batch_size=batch_size, start_from_id=resume_from):
             for row in batch:
-                groups[row["sample_id"]].append(row)
+                groups[get_sample_group_key(row["sample_id"])].append(row)
 
         written = 0
         pbar = tqdm(total=len(groups), desc="[qa_filter]")
         out_buf: List[Dict] = []
 
-        for sample_id in sorted(groups.keys()):
-            kept = _filter_qa_group(groups[sample_id], cfg)
+        for group_key in sorted(groups.keys()):
+            kept = _filter_qa_group(groups[group_key], cfg)
             for row in kept:
                 row["input_id"] = row["id"]
                 row["id"] = next_id

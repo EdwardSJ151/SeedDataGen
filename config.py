@@ -24,6 +24,9 @@ DATASET_ID: str = os.environ.get("DATASET_ID", "cemig-ceia/sites_educacionais")
 DATASET_SUBSET: str = os.environ.get("DATASET_SUBSET", "default")
 DATASET_SPLIT: str = os.environ.get("DATASET_SPLIT", "brasil_escola")
 DATASET_TEXT_FIELD: str = os.environ.get("DATASET_TEXT_FIELD", "text")
+# HF column used as the per-row identifier (sample_id). Generators fall back to
+# the streaming row index when this column is absent from the dataset.
+DATASET_ID_FIELD: str = os.environ.get("DATASET_ID_FIELD", "id")
 DATASET_MAX_CHARS: int = int(os.environ.get("DATASET_MAX_CHARS", "120000"))
 DATASET_MIN_CHARS: int = int(os.environ.get("DATASET_MIN_CHARS", "800"))
 

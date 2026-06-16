@@ -24,6 +24,7 @@ from SeedDataGen.utils import (
     count_jsonl_lines,
     get_last_processed_id,
     get_max_int_field,
+    get_sample_group_key,
     iter_jsonl_batches,
     write_jsonl_batch,
 )
@@ -100,10 +101,10 @@ class EmbedFilterPhase(Phase):
         last_input_id = get_max_int_field(output_file, "input_id")
         resume_from = last_input_id + 1 if last_input_id >= 0 else 0
 
-        groups: Dict[int, List[Dict]] = defaultdict(list)
+        groups: Dict[str, List[Dict]] = defaultdict(list)
         for batch in iter_jsonl_batches(input_file, batch_size=batch_size, start_from_id=resume_from):
             for item in batch:
-                groups[item["sample_id"]].append(item)
+                groups[get_sample_group_key(item["sample_id"])].append(item)
 
         n_loaded = sum(len(g) for g in groups.values())
         print(f"[embed_filter] {n_loaded} conversations in {len(groups)} sample_id groups")
@@ -113,8 +114,8 @@ class EmbedFilterPhase(Phase):
         out_buf: List[Dict] = []
         pbar = tqdm(total=len(groups), desc="[embed_filter]")
 
-        for sample_id in sorted(groups.keys()):
-            convos = groups[sample_id]
+        for group_key in sorted(groups.keys()):
+            convos = groups[group_key]
             surviving = _embedding_filter(convos, model, cfg.similarity_threshold)
 
             for item in surviving:

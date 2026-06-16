@@ -1,6 +1,6 @@
-/__pycache__/
+__pycache__/
 project_plan.md
 .env
-pipeline_myver.yaml
+*_myver.yaml
 prompts_genericos.py
 prompts_cemig.py
