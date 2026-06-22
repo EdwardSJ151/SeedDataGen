@@ -245,3 +245,134 @@ CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE: dict[str, str] = {
     "qa_local_multihop": ASSISTANT_TURN_PROMPT,
     "qa_similarity_multihop": ASSISTANT_TURN_PROMPT,
 }
+
+
+# ---------------------------------------------------------------------------
+# conv_expand_var v2 — system/user split prompts (supersede the *_VAR_* strings
+# above for the conv_expand_var phase).  Both turn-generators use the same
+# structure: an immutable system persona + ONE user message carrying the chunk.
+# The chunk is rendered by utils.format_sample_text_for_prompt as <documento>
+# blocks (no leaked "Chunk N" numbering).
+# ---------------------------------------------------------------------------
+
+# Immutable persona + fixed behavioral rules for the simulated USER turn.
+# Carries no run-dependent data.  The style instruction is NOT here (it varies
+# per turn) — it goes in the user message.
+CONV_USER_TURN_SYSTEM_PROMPT = """\
+Você é um profissional curioso e prático que consulta um assistente \
+especializado nas normas técnicas da CEMIG. Sua tarefa é escrever a próxima \
+pergunta do profissional na conversa.
+
+Regras invioláveis:
+- Sua saída deve conter APENAS a pergunta — nenhuma saudação, explicação, \
+resposta ou texto adicional.
+- Escreva exatamente uma pergunta.
+- Quando fizer referência à fonte, faça-o de forma natural pelo nome do \
+documento (ex.: "Com base no documento ND-4.15, ...", "Considerando os \
+procedimentos do documento X, ..."). NUNCA use referências meta como "com base \
+no contexto fornecido", "no texto fornecido", "no trecho acima" ou números de chunk.
+- Escreva em português."""
+
+# Immutable persona + fixed anti-meta rule for the ASSISTANT turn.  Carries no
+# run-dependent data; the refusal/bridging instruction lives in the user message.
+CONV_ASSISTANT_TURN_SYSTEM_PROMPT = """\
+Você é um assistente especializado nas normas técnicas da CEMIG.
+
+Regras invioláveis:
+- Nunca use referências meta como "com base no texto fornecido", "no trecho \
+fornecido", "nos trechos acima", "no contexto fornecido" ou números de chunk. \
+Quando precisar citar a fonte, refira-se ao documento pelo nome.
+- Escreva em português."""
+
+
+# USER-turn user message (mutable).  Fields: doc_summary, sample_text,
+# style_instruction, conversation_history.
+CONV_USER_TURN_USER_MSG = """\
+{doc_summary}{sample_text}
+
+Estilo da próxima pergunta:
+{style_instruction}
+
+Conversa até agora:
+{conversation_history}
+
+Escreva apenas a próxima pergunta do profissional:"""
+
+# USER-turn user message, diversity mode.  Adds previous_questions.
+CONV_USER_TURN_DIVERSITY_USER_MSG = """\
+{doc_summary}{sample_text}
+
+Estilo da próxima pergunta:
+{style_instruction}
+
+Tópicos já abordados em outras conversas sobre este documento (evite repeti-los):
+{previous_questions}
+
+Conversa até agora:
+{conversation_history}
+
+Escreva apenas a próxima pergunta do profissional, explorando um aspecto ainda não abordado:"""
+
+# Multihop variants nudge cross-document questions when more than one document
+# is present.  Same fields as the single-document variants.
+CONV_USER_TURN_MULTIHOP_USER_MSG = """\
+{doc_summary}{sample_text}
+
+Os blocos acima podem conter mais de um documento. Quando fizer sentido, faça \
+perguntas que relacionem informações de mais de um deles.
+
+Estilo da próxima pergunta:
+{style_instruction}
+
+Conversa até agora:
+{conversation_history}
+
+Escreva apenas a próxima pergunta do profissional:"""
+
+CONV_USER_TURN_MULTIHOP_DIVERSITY_USER_MSG = """\
+{doc_summary}{sample_text}
+
+Os blocos acima podem conter mais de um documento. Quando fizer sentido, faça \
+perguntas que relacionem informações de mais de um deles.
+
+Estilo da próxima pergunta:
+{style_instruction}
+
+Tópicos já abordados em outras conversas sobre este documento (evite repeti-los):
+{previous_questions}
+
+Conversa até agora:
+{conversation_history}
+
+Escreva apenas a próxima pergunta do profissional, explorando um aspecto ainda não abordado:"""
+
+
+# ASSISTANT-turn user message (mutable).  Fields: sample_text,
+# conversation_history, refusal_string.
+CONV_ASSISTANT_TURN_USER_MSG = """\
+{sample_text}
+
+Conversa até agora:
+{conversation_history}
+
+Responda à última mensagem do usuário usando as informações dos documentos acima.
+- Se os documentos tratarem o assunto apenas de forma tangencial, dê uma resposta \
+parcial: diga, citando o documento pelo nome, o que ele cobre e o que não aborda.
+- Se não houver nenhuma informação relevante, responda exatamente: {refusal_string}
+
+Resposta:"""
+
+
+# GEN_TYPE → user-message template (v2).  Multihop gen types get the cross-document
+# nudge; everything else uses the single-document template.
+CONV_EXPAND_USER_TURN_USER_MSG_BY_GEN_TYPE: dict[str, str] = {
+    "qa_gen_var": CONV_USER_TURN_USER_MSG,
+    "qa_local_multihop": CONV_USER_TURN_MULTIHOP_USER_MSG,
+    "qa_similarity_multihop": CONV_USER_TURN_MULTIHOP_USER_MSG,
+}
+
+CONV_EXPAND_USER_TURN_DIVERSITY_USER_MSG_BY_GEN_TYPE: dict[str, str] = {
+    "qa_gen_var": CONV_USER_TURN_DIVERSITY_USER_MSG,
+    "qa_local_multihop": CONV_USER_TURN_MULTIHOP_DIVERSITY_USER_MSG,
+    "qa_similarity_multihop": CONV_USER_TURN_MULTIHOP_DIVERSITY_USER_MSG,
+}

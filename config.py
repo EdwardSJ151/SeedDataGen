@@ -31,6 +31,11 @@ VLLM_BASE_URL: str = os.environ.get("VLLM_BASE_URL", "http://localhost:8020/v1")
 VLLM_API_KEY: str = os.environ.get("VLLM_API_KEY", "no-key-needed")
 STOP_STRINGS: list[str] = ["<|im_end|>", "<|end_of_text|>"]
 
+# Exact text the assistant must emit when nothing in the document is relevant.
+# conv_expand_var injects it into the assistant system prompt; conv_filter detects
+# it (via utils.is_refusal) to truncate the conversation at that turn.
+REFUSAL_STRING: str = "Não tenho contexto para responder isso."
+
 # Source dataset
 DATASET_ID: str = os.environ.get("DATASET_ID", "cemig-ceia/sites_educacionais")
 DATASET_SUBSET: str = os.environ.get("DATASET_SUBSET", "default")

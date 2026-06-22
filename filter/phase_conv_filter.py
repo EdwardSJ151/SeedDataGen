@@ -14,7 +14,7 @@ Input:  ConversationRow
 Output: ConversationRow  (re-numbered ids; input_id preserved)
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from tqdm import tqdm
@@ -26,6 +26,7 @@ from SeedDataGen.utils import (
     count_jsonl_lines,
     get_last_processed_id,
     get_max_int_field,
+    is_refusal,
     iter_jsonl_batches,
     levenshtein,
     write_jsonl_batch,
@@ -42,25 +43,50 @@ class ConvFilterConfig(BaseSettings):
     batch_size: int = 32
 
 
-def _filter_conversation(messages: List[Dict[str, str]], cfg: ConvFilterConfig) -> bool:
+def _truncate_at_refusal(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Return the conversation prefix up to (but not including) the first refusing
+    pair.  When an assistant turn is the deterministic refusal string, drop that
+    (user, assistant) pair and everything after it, leaving a valid prefix that
+    ends on an assistant turn.  Returns the input unchanged when no refusal.
+    """
+    for i, m in enumerate(messages):
+        if m["role"] == "assistant" and is_refusal(m["content"]):
+            # The user that prompted this refusal is at i-1; drop from there on.
+            return messages[: max(i - 1, 0)]
+    return messages
+
+
+def _filter_conversation(
+    messages: List[Dict[str, str]], cfg: ConvFilterConfig
+) -> Optional[List[Dict[str, str]]]:
+    """
+    Return the (possibly truncated) messages to keep, or None to drop the
+    conversation.  Refusal truncation runs first; the resulting prefix is then
+    held to the same heuristics (min_messages, assistant_min_len, dup checks),
+    so an early refusal that collapses the conversation to the seed pair is
+    dropped by min_messages.
+    """
+    messages = _truncate_at_refusal(messages)
+
     if len(messages) < cfg.min_messages:
-        return False
+        return None
 
     for m in messages:
         if m["role"] == "assistant" and len(m["content"].strip()) < cfg.assistant_min_len:
-            return False
+            return None
 
     user_msgs = [m["content"] for m in messages if m["role"] == "user"]
     for i in range(len(user_msgs)):
         for j in range(i + 1, len(user_msgs)):
             if levenshtein(user_msgs[i], user_msgs[j]) <= cfg.user_levenshtein_threshold:
-                return False
+                return None
 
     for i in range(len(messages) - 1):
         if levenshtein(messages[i]["content"], messages[i + 1]["content"]) <= cfg.adjacent_levenshtein_threshold:
-            return False
+            return None
 
-    return True
+    return messages
 
 
 @register
@@ -91,7 +117,9 @@ class ConvFilterPhase(Phase):
         for batch in iter_jsonl_batches(input_file, batch_size=batch_size, start_from_id=resume_from):
             for item in batch:
                 msgs = item.get("messages", [])
-                if _filter_conversation(msgs, cfg):
+                kept_msgs = _filter_conversation(msgs, cfg)
+                if kept_msgs is not None:
+                    item["messages"] = kept_msgs
                     item["input_id"] = item["id"]
                     item["id"] = next_id
                     next_id += 1

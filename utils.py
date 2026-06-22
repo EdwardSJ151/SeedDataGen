@@ -189,6 +189,70 @@ def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
     return "\n\n".join(parts)
 
 
+def extract_doc_names(sample_text: Union[str, Dict, List[Dict]]) -> List[str]:
+    """
+    Return the unique document names referenced by *sample_text*, in first-seen
+    order.  Empty list for legacy plain-string sample_text (no name available).
+    """
+    names: List[str] = []
+    seen: set = set()
+
+    def _add(name: Optional[str]) -> None:
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    if isinstance(sample_text, dict):
+        for value in sample_text.values():
+            _, document_name = _chunk_text_and_name(value)
+            _add(document_name)
+    elif isinstance(sample_text, list):
+        for entry in sample_text:
+            if isinstance(entry, dict):
+                name = entry.get("document_name")
+                _add(str(name) if name is not None else None)
+    return names
+
+
+def format_sample_text_for_prompt(sample_text: Union[str, Dict, List[Dict]]) -> str:
+    """
+    Render *sample_text* for conversation/judge prompts as <documento> blocks.
+
+    Unlike :func:`format_sample_text`, this never emits the leaked ``[Chunk N]``
+    numbering — only the document name is kept (as a tag attribute), so the model
+    can reference the document by name without surfacing chunk metadata.
+
+    Shapes accepted mirror :func:`format_sample_text`; multihop renders one
+    ``<documento>`` block per chunk, preserving each chunk's ``document_name``.
+    """
+    if isinstance(sample_text, str):
+        return f"<documento>\n{sample_text}\n</documento>"
+
+    def _block(text: str, document_name: Optional[str]) -> str:
+        if document_name:
+            return f'<documento nome="{document_name}">\n{text}\n</documento>'
+        return f"<documento>\n{text}\n</documento>"
+
+    parts: List[str] = []
+    if isinstance(sample_text, dict):
+        for value in sample_text.values():
+            text, document_name = _chunk_text_and_name(value)
+            parts.append(_block(text, document_name))
+    elif isinstance(sample_text, list):
+        for entry in sample_text:
+            if not isinstance(entry, dict):
+                parts.append(_block(str(entry), None))
+                continue
+            text = entry.get("text", "")
+            document_name = entry.get("document_name")
+            doc_name = str(document_name) if document_name is not None else None
+            parts.append(_block(text, doc_name))
+    else:
+        return _block(str(sample_text), None)
+
+    return "\n\n".join(parts)
+
+
 def sample_text_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
     """Build a {hf_row_id: {text, document_name}} mapping from Chroma chunk dicts."""
     out: Dict[str, Dict[str, str]] = {}
@@ -401,6 +465,21 @@ def format_user_history(messages: List[Dict[str, str]]) -> str:
 
 def format_conversation_for_judge(messages: List[Dict[str, str]]) -> str:
     return format_conversation_history(messages)
+
+
+def _normalize_refusal(text: str) -> str:
+    """Lowercase, strip whitespace, drop a trailing period for refusal matching."""
+    return text.strip().casefold().rstrip(".").strip()
+
+
+def is_refusal(text: str) -> bool:
+    """
+    True when *text* is the deterministic refusal string (config.REFUSAL_STRING),
+    tolerant of case and a trailing period.
+    """
+    from SeedDataGen.config import REFUSAL_STRING
+
+    return _normalize_refusal(text) == _normalize_refusal(REFUSAL_STRING)
 
 
 # Score parsing (Phase 5 — LLM judge output)

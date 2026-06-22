@@ -4,3 +4,8 @@ project_plan.md
 *_myver.yaml
 prompts_genericos.py
 prompts_cemig.py
+
+CLAUDE.md
+CODEBASE_MAP.md
+.claude
+docs/ARCHITECTURE.md

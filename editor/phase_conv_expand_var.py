@@ -38,14 +38,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
-from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
+from SeedDataGen.config import REFUSAL_STRING, STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
 from SeedDataGen.editor.prompts import (
-    ASSISTANT_TURN_PROMPT,
-    CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE,
-    CONV_EXPAND_USER_TURN_BY_GEN_TYPE,
-    CONV_EXPAND_USER_TURN_DIVERSITY_BY_GEN_TYPE,
-    USER_TURN_VAR_DIVERSITY_PROMPT,
-    USER_TURN_VAR_PROMPT,
+    CONV_ASSISTANT_TURN_SYSTEM_PROMPT,
+    CONV_ASSISTANT_TURN_USER_MSG,
+    CONV_EXPAND_USER_TURN_DIVERSITY_USER_MSG_BY_GEN_TYPE,
+    CONV_EXPAND_USER_TURN_USER_MSG_BY_GEN_TYPE,
+    CONV_USER_TURN_DIVERSITY_USER_MSG,
+    CONV_USER_TURN_SYSTEM_PROMPT,
+    CONV_USER_TURN_USER_MSG,
 )
 from SeedDataGen.generator.prompts import QA_GEN_VAR_STYLE_INSTRUCTIONS
 from SeedDataGen.registry import register
@@ -54,7 +55,7 @@ from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
     format_doc_summary,
-    format_sample_text,
+    format_sample_text_for_prompt,
     format_user_history,
     get_last_processed_id,
     get_max_int_field,
@@ -81,6 +82,9 @@ class ConvExpandVarConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CONV_EXPAND_VAR_", env_file=".env", extra="ignore", enable_decoding=False)
 
     naive_gen: bool = True
+    # When True the simulated-user turn sees the full conversation (user+assistant)
+    # so far; when False it sees only the prior user questions.
+    full_history_for_user_turn: bool = False
     question_styles: List[str] = ["general", "specific", "compositional", "comparative"]
     user_turn_temperature: float = 0.9
     user_turn_top_p: float = 0.95
@@ -122,6 +126,7 @@ async def _generate_user_turn(
     history_str: str,
     style: str,
     *,
+    sem: asyncio.Semaphore,
     gen_type: str,
     previous_questions: Optional[List[str]],
     doc_summary: str,
@@ -130,21 +135,22 @@ async def _generate_user_turn(
     max_tokens: int,
 ) -> Optional[str]:
     """
-    Simulated user turn.  Style instruction is always injected.
+    Simulated user turn.  Sent as an immutable system persona + ONE user message
+    carrying the chunk (as <documento> blocks), the style instruction, and the
+    conversation history.  Style instruction is always injected.
     When previous_questions is provided (non-naive mode, not the first pair),
-    the diversity prompt is used instead of the plain style prompt so the model
-    is also steered away from already-covered ground.
-    The naive (non-diversity) template is selected per *gen_type* so multihop
-    rows can use a multi-chunk-aware prompt.
+    the diversity user message is used so the model is also steered away from
+    already-covered ground.  The naive (non-diversity) template is selected per
+    *gen_type* so multihop rows nudge cross-document questions.
     The assistant never sees this prompt.
     """
     style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, "")
 
     if previous_questions:
-        template = CONV_EXPAND_USER_TURN_DIVERSITY_BY_GEN_TYPE.get(
-            gen_type, USER_TURN_VAR_DIVERSITY_PROMPT
+        template = CONV_EXPAND_USER_TURN_DIVERSITY_USER_MSG_BY_GEN_TYPE.get(
+            gen_type, CONV_USER_TURN_DIVERSITY_USER_MSG
         )
-        prompt = template.format(
+        user_msg = template.format(
             style_instruction=style_instruction,
             doc_summary=doc_summary,
             sample_text=sample_text,
@@ -152,8 +158,10 @@ async def _generate_user_turn(
             conversation_history=history_str,
         )
     else:
-        template = CONV_EXPAND_USER_TURN_BY_GEN_TYPE.get(gen_type, USER_TURN_VAR_PROMPT)
-        prompt = template.format(
+        template = CONV_EXPAND_USER_TURN_USER_MSG_BY_GEN_TYPE.get(
+            gen_type, CONV_USER_TURN_USER_MSG
+        )
+        user_msg = template.format(
             style_instruction=style_instruction,
             doc_summary=doc_summary,
             sample_text=sample_text,
@@ -161,17 +169,21 @@ async def _generate_user_turn(
         )
 
     try:
-        resp = await client.chat.completions.create(
-            model=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": False},
-                "stop": STOP_STRINGS,
-            },
-        )
+        async with sem:
+            resp = await client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": CONV_USER_TURN_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "stop": STOP_STRINGS,
+                },
+            )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         print(f"[conv_expand_var] user turn LLM error: {e}")
@@ -184,29 +196,40 @@ async def _generate_assistant_turn(
     sample_text: str,
     history_str: str,
     *,
+    sem: asyncio.Semaphore,
     gen_type: str,
     temperature: float,
     top_p: float,
     max_tokens: int,
 ) -> Optional[str]:
-    """Assistant turn — only sees the conversation history, never the style."""
-    template = CONV_EXPAND_ASSISTANT_TURN_BY_GEN_TYPE.get(gen_type, ASSISTANT_TURN_PROMPT)
-    prompt = template.format(
+    """
+    Assistant turn — immutable system persona + ONE user message carrying the
+    chunk (as <documento> blocks) and the full conversation history.  Structured
+    identically to the user turn to avoid mid-generation role confusion.  Never
+    sees the style or any diversity/coverage logic; emits the deterministic
+    refusal string when nothing in the document is relevant.
+    """
+    user_msg = CONV_ASSISTANT_TURN_USER_MSG.format(
         sample_text=sample_text,
         conversation_history=history_str,
+        refusal_string=REFUSAL_STRING,
     )
     try:
-        resp = await client.chat.completions.create(
-            model=model_id,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            extra_body={
-                "chat_template_kwargs": {"enable_thinking": False},
-                "stop": STOP_STRINGS,
-            },
-        )
+        async with sem:
+            resp = await client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": CONV_ASSISTANT_TURN_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "stop": STOP_STRINGS,
+                },
+            )
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         print(f"[conv_expand_var] assistant turn LLM error: {e}")
@@ -222,6 +245,7 @@ async def _expand_conversation(
     qa: Dict[str, str],
     seed_style: str,
     gen_type: str,
+    sem: asyncio.Semaphore,
     *,
     doc_summary: str = "",
     previous_questions: Optional[List[str]] = None,
@@ -236,10 +260,15 @@ async def _expand_conversation(
     use_diversity = not cfg.naive_gen and previous_questions
 
     for style in styles:
-        user_history_str = format_user_history(messages)
+        user_history_str = (
+            format_conversation_history(messages)
+            if cfg.full_history_for_user_turn
+            else format_user_history(messages)
+        )
         user_msg = await _generate_user_turn(
             client, model_id,
             sample_text, user_history_str, style,
+            sem=sem,
             gen_type=gen_type,
             previous_questions=previous_questions if use_diversity else None,
             doc_summary=doc_summary,
@@ -255,6 +284,7 @@ async def _expand_conversation(
         asst_msg = await _generate_assistant_turn(
             client, model_id,
             sample_text, full_history_str,
+            sem=sem,
             gen_type=gen_type,
             temperature=cfg.assistant_turn_temperature,
             top_p=cfg.assistant_turn_top_p,
@@ -281,15 +311,15 @@ async def _process_batch(
 
     if cfg.naive_gen:
         async def _one_naive(item: Dict[str, Any]):
-            async with sem:
-                return await _expand_conversation(
-                    client, cfg, model_id,
-                    format_sample_text(item["sample_text"]),
-                    {"question": item["question"], "answer": item["answer"]},
-                    item["question_style"],
-                    item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
-                    doc_summary=_doc_summary_for_item(summary_map, item),
-                )
+            return await _expand_conversation(
+                client, cfg, model_id,
+                format_sample_text_for_prompt(item["sample_text"]),
+                {"question": item["question"], "answer": item["answer"]},
+                item["question_style"],
+                item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
+                sem,
+                doc_summary=_doc_summary_for_item(summary_map, item),
+            )
 
         results = await asyncio.gather(*[_one_naive(it) for it in batch])
         items_ordered = batch
@@ -311,16 +341,16 @@ async def _process_batch(
                 previous_by_sample[key].append(item["question"])
 
         async def _one_div(item: Dict[str, Any], prev_qs: List[str]):
-            async with sem:
-                return await _expand_conversation(
-                    client, cfg, model_id,
-                    format_sample_text(item["sample_text"]),
-                    {"question": item["question"], "answer": item["answer"]},
-                    item["question_style"],
-                    item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
-                    doc_summary=_doc_summary_for_item(summary_map, item),
-                    previous_questions=prev_qs if prev_qs else None,
-                )
+            return await _expand_conversation(
+                client, cfg, model_id,
+                format_sample_text_for_prompt(item["sample_text"]),
+                {"question": item["question"], "answer": item["answer"]},
+                item["question_style"],
+                item.get("GEN_TYPE", _DEFAULT_GEN_TYPE),
+                sem,
+                doc_summary=_doc_summary_for_item(summary_map, item),
+                previous_questions=prev_qs if prev_qs else None,
+            )
 
         results = await asyncio.gather(*[_one_div(it, pqs) for it, pqs in items_ordered])
         items_ordered = [it for it, _ in items_ordered]
@@ -365,42 +395,49 @@ class ConvExpandVarPhase(Phase):
             else ""
         )
 
+        # Immutable system personas (shared across all turns).
+        results.append(("conv_expand_var / user turn — system persona", CONV_USER_TURN_SYSTEM_PROMPT))
+        results.append(
+            ("conv_expand_var / assistant turn — system persona", CONV_ASSISTANT_TURN_SYSTEM_PROMPT)
+        )
+
         for style in cfg.question_styles:
             style_instruction = QA_GEN_VAR_STYLE_INSTRUCTIONS.get(style, f"[UNKNOWN STYLE: {style}]")
 
-            user_naive = USER_TURN_VAR_PROMPT.format(
+            user_naive = CONV_USER_TURN_USER_MSG.format(
                 style_instruction=style_instruction,
                 doc_summary=doc_summary,
-                sample_text="[SAMPLE_TEXT]",
-                conversation_history="[PREVIOUS_USER_QUESTIONS]",
+                sample_text="[<documento> SAMPLE_TEXT]",
+                conversation_history="[CONVERSATION_HISTORY]",
             )
-            results.append((f"conv_expand_var / user turn — naive, style={style} (system)", user_naive))
+            results.append((f"conv_expand_var / user turn — naive, style={style} (user msg)", user_naive))
 
-            user_multihop = CONV_EXPAND_USER_TURN_BY_GEN_TYPE["qa_local_multihop"].format(
+            user_multihop = CONV_EXPAND_USER_TURN_USER_MSG_BY_GEN_TYPE["qa_local_multihop"].format(
                 style_instruction=style_instruction,
                 doc_summary=doc_summary,
-                sample_text="[MULTI_CHUNK_SAMPLE_TEXT]",
-                conversation_history="[PREVIOUS_USER_QUESTIONS]",
+                sample_text="[<documento> MULTI_CHUNK_SAMPLE_TEXT]",
+                conversation_history="[CONVERSATION_HISTORY]",
             )
             results.append(
-                (f"conv_expand_var / user turn — multihop naive, style={style} (system)", user_multihop)
+                (f"conv_expand_var / user turn — multihop naive, style={style} (user msg)", user_multihop)
             )
 
             if not cfg.naive_gen:
-                user_div = USER_TURN_VAR_DIVERSITY_PROMPT.format(
+                user_div = CONV_USER_TURN_DIVERSITY_USER_MSG.format(
                     style_instruction=style_instruction,
                     doc_summary=doc_summary,
-                    sample_text="[SAMPLE_TEXT]",
+                    sample_text="[<documento> SAMPLE_TEXT]",
                     previous_questions="[SEED_QUESTIONS_FROM_OTHER_CONVERSATIONS]",
-                    conversation_history="[PREVIOUS_USER_QUESTIONS]",
+                    conversation_history="[CONVERSATION_HISTORY]",
                 )
-                results.append((f"conv_expand_var / user turn — diversity, style={style} (system)", user_div))
+                results.append((f"conv_expand_var / user turn — diversity, style={style} (user msg)", user_div))
 
-        assistant = ASSISTANT_TURN_PROMPT.format(
-            sample_text="[SAMPLE_TEXT]",
+        assistant = CONV_ASSISTANT_TURN_USER_MSG.format(
+            sample_text="[<documento> SAMPLE_TEXT]",
             conversation_history="[FULL_CONVERSATION_HISTORY]",
+            refusal_string=REFUSAL_STRING,
         )
-        results.append(("conv_expand_var / assistant turn (system)", assistant))
+        results.append(("conv_expand_var / assistant turn (user msg)", assistant))
 
         return results
 

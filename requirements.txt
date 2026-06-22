@@ -8,3 +8,5 @@ pydantic
 pydantic-settings
 pyyaml
 chromadb
+pytest
+pytest-asyncio

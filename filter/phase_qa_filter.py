@@ -8,8 +8,8 @@ For each sample_id group:
   - Drop near-duplicate questions (Levenshtein distance ≤ levenshtein_threshold).
 
 Role:   FILTER
-Input:  QARow
-Output: QARow  (re-numbered ids; input_id preserved)
+Input:  StyledQARow
+Output: StyledQARow  (re-numbered ids; input_id preserved)
 """
 
 from collections import defaultdict
@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.registry import register
-from SeedDataGen.schemas import QARow, StyledQARow
+from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     get_last_processed_id,
@@ -59,8 +59,7 @@ def _filter_qa_group(qa_rows: List[Dict], cfg: QAFilterConfig) -> List[Dict]:
 class QAFilterPhase(Phase):
     name = "qa_filter"
     role = PhaseRole.FILTER
-    input_schema = QARow
-    # StyledQARow so that the pipeline validator accepts qa_gen_var → qa_filter → conv_expand_var.  qa_filter is a pure dict passthrough and preserves all extra fields (including question_style).
+    input_schema = StyledQARow
     output_schema = StyledQARow
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:

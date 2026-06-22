@@ -1,49 +1,47 @@
 # SeedDataGen
 
-Turns a HuggingFace text dataset into filtered multi-turn instruction-tuning
-conversations in JSONL.  Uses a vLLM server for generation/judging and
-`sentence-transformers` for embedding-based deduplication.
+YAML-driven pipeline: HuggingFace corpus → filtered multi-turn instruction JSONL.
+Generation and judging call a vLLM server; dedup uses `sentence-transformers`.
 
 ## Quick start
 
+Run from the directory that **contains** `SeedDataGen/` (imports are `SeedDataGen.*`):
+
 ```bash
-# Install dependencies (run from the parent directory that contains SeedDataGen/)
 pip install -r SeedDataGen/requirements.txt
 
-# Full pipeline using the example YAML
 python -m SeedDataGen.run_pipeline --pipeline SeedDataGen/pipeline_myver.yaml
-
-# Multi-generator run (qa_gen_var + qa_local_multihop + qa_similarity_multihop)
 python -m SeedDataGen.run_pipeline --pipeline SeedDataGen/pipeline_multihop.yaml
-
-# List all registered phases
 python -m SeedDataGen.run_pipeline --list-phases
-
-# Preview all prompts before running (no LLM calls)
 python -m SeedDataGen.run_pipeline --dump-prompts prompts_preview.txt
+python -m SeedDataGen.run_pipeline --pipeline SeedDataGen/pipeline_multihop.yaml --dry-run
 ```
 
-Set `VLLM_BASE_URL` (and optionally `VLLM_API_KEY`) in the YAML `env:` block or
-in `SeedDataGen/.env`.
+Set `VLLM_BASE_URL`, `DATASET_DOC_NAME_FIELD`, and other `DATASET_*` keys in the YAML
+`env:` block or `SeedDataGen/.env` before running.
 
-## Documentation
-
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — full architecture reference, data
-  contracts, how to add phases/generators, YAML format, and design rationale.
-  This is the right starting point for any extension work.
-- **[PHASES.md](docs/PHASES.md)** — phase reference card (role, config
-  prefix, key settings, input/output schema).
-
-## Pipeline files
+## Pipeline YAML files
 
 | File | Description |
-|---|---|
-| `pipeline.yaml` | Legacy single-generator example (`qa_gen`) |
-| `pipeline_myver.yaml` | Production single-generator example (`qa_gen_var`) |
-| `pipeline_multihop.yaml` | Multi-generator example (all three generators) |
+|------|-------------|
+| `pipeline.yaml` | Legacy single-generator (`qa_gen`) |
+| `pipeline_myver.yaml` | Single-generator (`qa_gen_var`) |
+| `pipeline_multihop.yaml` | Multi-run example (three generators + shared tail) |
+| `pipeline_multihop_myver.yaml` | Multi-run tuned for the CEMIG norms corpus |
 
-## Merging multiple runs
+## Merge multi-run outputs
 
 ```bash
 python -m SeedDataGen.merge_runs out/*/final.jsonl -o combined/final.jsonl
 ```
+
+## Documentation
+
+| Doc | Use when |
+|-----|----------|
+| [`CODEBASE_MAP.md`](CODEBASE_MAP.md) | Finding which file implements a feature |
+| [`CLAUDE.md`](CLAUDE.md) | Agent/dev essentials: architecture, gotchas, how to add phases |
+| [`docs/PHASES.md`](docs/PHASES.md) | Per-phase settings, schemas, and behavior |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Data contracts, resume, YAML formats, extension guide |
+
+Each role folder also has a short `CLAUDE.md` (`generator/`, `editor/`, etc.).
