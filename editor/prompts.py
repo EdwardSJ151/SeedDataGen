@@ -367,12 +367,14 @@ Resposta:"""
 # nudge; everything else uses the single-document template.
 CONV_EXPAND_USER_TURN_USER_MSG_BY_GEN_TYPE: dict[str, str] = {
     "qa_gen_var": CONV_USER_TURN_USER_MSG,
+    "dog_instruct": CONV_USER_TURN_USER_MSG,
     "qa_local_multihop": CONV_USER_TURN_MULTIHOP_USER_MSG,
     "qa_similarity_multihop": CONV_USER_TURN_MULTIHOP_USER_MSG,
 }
 
 CONV_EXPAND_USER_TURN_DIVERSITY_USER_MSG_BY_GEN_TYPE: dict[str, str] = {
     "qa_gen_var": CONV_USER_TURN_DIVERSITY_USER_MSG,
+    "dog_instruct": CONV_USER_TURN_DIVERSITY_USER_MSG,
     "qa_local_multihop": CONV_USER_TURN_MULTIHOP_DIVERSITY_USER_MSG,
     "qa_similarity_multihop": CONV_USER_TURN_MULTIHOP_DIVERSITY_USER_MSG,
 }
