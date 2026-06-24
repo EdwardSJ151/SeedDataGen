@@ -108,6 +108,21 @@ Pairwise exclusion prevents reusing the same chunk pair across groups (rebuilt f
 
 ---
 
+### `rewrite_gen`
+**Role:** GENERATOR · **Output:** `ConversationRow` (single-turn)
+
+Single-turn rewrite/summarization per chunk × style. Two LLM calls per pair — a user turn that writes
+ONLY the request, then an assistant turn that answers it as internal knowledge (no meta-references,
+emits `REFUSAL_STRING` when unfounded) — assembled into `messages=[user, assistant]`. Because it emits
+a finished `ConversationRow`, it **skips** `qa_filter`/`conv_expand_var` and goes straight to
+`conv_filter → judge → embed_filter` (see `pipeline_rewrite_myver.yaml`, a separate pipeline). Styles
+(`generator/prompts.py` → `REWRITE_GEN_STYLE_INSTRUCTIONS`): `summary`, `simplify`, `focus`.
+
+**Prefix:** `REWRITE_GEN_` — `QUESTION_STYLES`, separate `USER_TURN_*` / `ASSISTANT_TURN_*`
+temperature/top_p/max_tokens, `BATCH_SIZE`, `MAX_CONCURRENT`.
+
+---
+
 ### `answer_rewrite` *(optional)*
 **Role:** EDITOR · **Input/Output:** `QARow`
 
@@ -142,20 +157,25 @@ Legacy single-style expansion. Prefer `conv_expand_var`.
 **Role:** EDITOR · **Input:** `StyledQARow` · **Output:** `ConversationRow`
 
 Seeds from each QA pair, then adds N user→assistant rounds. Extra turns cycle styles; diversity mode
-(`NAIVE_GEN=false`) steers away from prior seed questions on the same source. Prompts routed by
-`GEN_TYPE` via `CONV_EXPAND_*_BY_GEN_TYPE` dicts in `editor/prompts.py`.
+(`NAIVE_GEN=false`) steers away from prior seed questions on the same source. Each turn is an immutable
+system persona + ONE user message carrying the `<documento>` chunk; user-turn messages are routed by
+`GEN_TYPE` via the `CONV_EXPAND_USER_TURN_*_USER_MSG_BY_GEN_TYPE` maps in `editor/prompts.py`. The
+assistant emits `REFUSAL_STRING` when the chunk lacks the basis.
 
-Each row holds the semaphore for its full expansion (~2 × N sequential LLM calls per row).
+Each turn's LLM call acquires the semaphore individually (~2 × N sequential calls per row).
 
-**Prefix:** `CONV_EXPAND_VAR_` — same as `conv_expand` plus `QUESTION_STYLES`.
+**Prefix:** `CONV_EXPAND_VAR_` — same as `conv_expand` plus `QUESTION_STYLES` and
+`FULL_HISTORY_FOR_USER_TURN` (user turn sees full history vs. prior user questions only).
 
 ---
 
 ### `conv_filter`
 **Role:** FILTER · **Input/Output:** `ConversationRow`
 
-Drops conversations with too few messages, short assistant turns, duplicate user turns, or duplicate
-adjacent messages.
+First **truncates** at the first assistant refusal (`utils.is_refusal` / `REFUSAL_STRING`) — dropping
+that pair and everything after — then drops conversations with too few messages, short assistant turns,
+duplicate user turns, or duplicate adjacent messages. So an early refusal collapses to the seed pair
+and is dropped by `MIN_MESSAGES`.
 
 **Prefix:** `CONV_FILTER_` — `MIN_MESSAGES`, `ASSISTANT_MIN_LEN`, `USER_LEVENSHTEIN_THRESHOLD`,
 `ADJACENT_LEVENSHTEIN_THRESHOLD`.

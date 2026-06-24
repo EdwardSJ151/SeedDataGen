@@ -14,6 +14,7 @@ Input:  ConversationRow
 Output: ConversationRow  (re-numbered ids; input_id preserved)
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,11 @@ from SeedDataGen.utils import (
     levenshtein,
     write_jsonl_batch,
 )
+
+# Worker threads for the (CPU-bound) Levenshtein filtering.  rapidfuzz releases
+# the GIL during the C edit-distance computation, so threads parallelize the
+# dominant cost.  Fixed at 16 (8 cores / 16 threads); not configurable.
+_FILTER_WORKERS = 16
 
 
 class ConvFilterConfig(BaseSettings):
@@ -114,23 +120,27 @@ class ConvFilterPhase(Phase):
         out_buf: List[Dict] = []
         pbar = tqdm(total=total, desc="[conv_filter]")
 
-        for batch in iter_jsonl_batches(input_file, batch_size=batch_size, start_from_id=resume_from):
-            for item in batch:
-                msgs = item.get("messages", [])
-                kept_msgs = _filter_conversation(msgs, cfg)
-                if kept_msgs is not None:
-                    item["messages"] = kept_msgs
-                    item["input_id"] = item["id"]
-                    item["id"] = next_id
-                    next_id += 1
-                    out_buf.append(item)
-                    kept += 1
-                else:
-                    dropped += 1
-            if len(out_buf) >= batch_size:
-                write_jsonl_batch(output_file, out_buf)
-                out_buf = []
-            pbar.update(len(batch))
+        with ThreadPoolExecutor(max_workers=_FILTER_WORKERS) as pool:
+            for batch in iter_jsonl_batches(input_file, batch_size=batch_size, start_from_id=resume_from):
+                # One conversation per task; pool.map preserves input order, so id
+                # assignment below stays deterministic.
+                kept_results = list(
+                    pool.map(lambda it: _filter_conversation(it.get("messages", []), cfg), batch)
+                )
+                for item, kept_msgs in zip(batch, kept_results):
+                    if kept_msgs is not None:
+                        item["messages"] = kept_msgs
+                        item["input_id"] = item["id"]
+                        item["id"] = next_id
+                        next_id += 1
+                        out_buf.append(item)
+                        kept += 1
+                    else:
+                        dropped += 1
+                if len(out_buf) >= batch_size:
+                    write_jsonl_batch(output_file, out_buf)
+                    out_buf = []
+                pbar.update(len(batch))
 
         if out_buf:
             write_jsonl_batch(output_file, out_buf)
