@@ -1,0 +1,22 @@
+env:
+  VLLM_BASE_URL: "http://10.100.0.122:8026/v1"
+  DATASET_ID: "dataset"
+  DATASET_SPLIT: "train"
+  DATASET_DOC_NAME_FIELD: "document_name"
+  DATASET_MAX_CHARS: "1000000"
+  NUM_ROWS: "-1"
+
+pipeline:
+  - phase: rewrite_gen
+    output: rewrite_gen.jsonl
+    config:
+      REWRITE_GEN_QUESTION_STYLES: "summary,simplify,focus"
+
+  - phase: conv_filter
+    output: rewrite_conv_filtered.jsonl
+
+  - phase: judge
+    output: rewrite_judged.jsonl
+
+  - phase: embed_filter
+    output: rewrite_final.jsonl

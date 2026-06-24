@@ -3,4 +3,11 @@ openai
 tqdm
 datasets
 numpy
+rapidfuzz
 sentence-transformers
+pydantic
+pydantic-settings
+pyyaml
+chromadb
+pytest
+pytest-asyncio
