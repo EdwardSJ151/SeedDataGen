@@ -48,6 +48,51 @@ Instruções de estilo:
 Gere exatamente um par pergunta-resposta seguindo o estilo indicado, focando no texto e só usando o sumário do texto como referencia/complemento."""
 
 
+# DOG_INSTRUCT — back-translation style question generation + answer rewrite
+DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT = """\
+Você gera uma única pergunta de usuário que possa ser respondida pelo texto fornecido.
+
+Regras:
+- Escreva apenas a pergunta final, sem explicações adicionais.
+- A pergunta deve ser natural, útil e coerente com o texto.
+- Não invente fatos, cenários ou requisitos que não estejam sustentados pelo texto.
+- Não use referências meta como "o texto fornecido", "o trecho", "o chunk" ou números de chunk; ao citar a fonte, refira-se ao documento pelo nome.
+- Responda em português."""
+
+
+DOG_INSTRUCT_QUESTION_USER_PROMPT = """\
+{doc_summary}Texto:
+{sample_text}
+
+Gere uma única pergunta que um usuário poderia fazer para receber esse texto como resposta.
+Escreva apenas a pergunta."""
+
+
+DOG_INSTRUCT_REWRITE_SYSTEM_PROMPT = """\
+Você reescreve respostas de assistente para que combinem melhor com a pergunta do usuário.
+
+Regras:
+- Preserve o conteúdo técnico e factual relevante para a pergunta; não invente novas informações.
+- Mantenha toda informação importante para a pergunta. Detalhes que não dizem respeito à pergunta podem ser removidos, mas apenas quando não fizer sentido mantê-los.
+- Nunca use referências meta como "com base no texto fornecido", "no trecho", "nos trechos acima", "no contexto fornecido", "no chunk" ou números de chunk; responda como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+- Reescreva de forma natural, clara e coerente com a pergunta.
+- Escreva apenas a resposta final, em português."""
+
+
+DOG_INSTRUCT_REWRITE_USER_PROMPT = """\
+Pergunta do usuário:
+{question}
+
+Resposta original:
+{answer}
+
+{doc_summary}Se necessário, use o texto abaixo apenas para preservar fidelidade ao conteúdo original:
+{sample_text}
+
+Reescreva a resposta para que ela se encaixe melhor no que o usuário está pedindo, sem mudar muito o conteúdo e sem perder informações técnicas.
+Escreva apenas a resposta reescrita."""
+
+
 # QA_LOCAL_MULTIHOP
 # Context spans multiple adjacent passages joined in {sample_text}.
 QA_LOCAL_MULTIHOP_PROMPT = """\
@@ -171,7 +216,7 @@ QA_GEN_VAR_STYLE_INSTRUCTIONS: dict[str, str] = {
     ),
     "hard": (
         "Nível difícil: a pergunta deve exigir raciocínio mais denso — por exemplo, "
-        "relacionar várias partes do texto, explicar um \"porquê\" ou um mecanismo implícito, "
+        'relacionar várias partes do texto, explicar um "porquê" ou um mecanismo implícito, '
         "ou sintetizar implicações sempre com base no que está escrito, sem extrapolar "
         "além do texto."
     ),
