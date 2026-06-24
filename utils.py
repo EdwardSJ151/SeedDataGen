@@ -11,6 +11,7 @@ import re
 from typing import Any, Dict, Iterator, List, Optional, Type, Union
 
 from pydantic import BaseModel
+from rapidfuzz.distance import Levenshtein as _RapidfuzzLevenshtein
 
 
 # JSONL helpers (same patterns as PtPersonaIFGen)
@@ -411,18 +412,12 @@ def dump_row(obj: BaseModel) -> Dict:
 
 # Levenshtein distance
 def levenshtein(a: str, b: str) -> int:
-    if len(a) < len(b):
-        return levenshtein(b, a)
-    if len(b) == 0:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a):
-        curr = [i + 1]
-        for j, cb in enumerate(b):
-            cost = 0 if ca == cb else 1
-            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost))
-        prev = curr
-    return prev[-1]
+    """
+    Standard Levenshtein edit distance (insert/delete/substitute cost 1),
+    C-backed via rapidfuzz.  rapidfuzz releases the GIL during computation, so
+    callers can parallelize across threads.
+    """
+    return _RapidfuzzLevenshtein.distance(a, b)
 
 
 # QA parsing (Phase 1 output → list of dicts)

@@ -191,3 +191,81 @@ QA_GEN_VAR_STYLE_INSTRUCTIONS: dict[str, str] = {
         "simples possível sem extrapolar."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# rewrite_gen — single-turn rewrite/summarization generation.
+# Two calls per (chunk × style): a user turn that writes ONLY the request, and
+# an assistant turn that answers it as internal knowledge (no meta-references).
+# ---------------------------------------------------------------------------
+
+# The "instruction" IS the style: summary / simplify / focus.  Each adapts the
+# user-turn persona to a different transformation of the chunk.
+REWRITE_GEN_STYLE_INSTRUCTIONS: dict[str, str] = {
+    "summary": (
+        "Peça um resumo dos pontos principais desta seção do documento, "
+        "sintetizando o conteúdo de forma fiel, sem adicionar informação externa."
+    ),
+    "simplify": (
+        "Peça que esta seção do documento seja reescrita em linguagem mais clara "
+        "e menos técnica, voltada a um leitor leigo, mantendo todos os fatos e "
+        "termos técnicos essenciais e preservando o tom formal."
+    ),
+    "focus": (
+        "Peça que um aspecto ou parte específica desta seção do documento seja "
+        "reescrito ou reformulado, deixando claro qual aspecto deve ser tratado."
+    ),
+}
+
+# Immutable persona for the USER turn — outputs ONLY the request.  The style
+# instruction (the mutable part) is injected in the user message.
+REWRITE_GEN_USER_TURN_SYSTEM_PROMPT = """\
+Você é um profissional que escreve um único pedido para um assistente \
+especializado nas normas técnicas da CEMIG. O pedido solicita uma transformação \
+do conteúdo de uma seção específica de um documento (resumo, reescrita ou \
+reformulação), conforme a instrução.
+
+Regras invioláveis:
+- Sua saída deve conter APENAS o pedido — nenhuma saudação, explicação, resposta \
+ou texto adicional.
+- Escreva exatamente um pedido.
+- Mencione o documento pelo nome e identifique a seção em questão de forma \
+natural, a partir do próprio conteúdo (ex.: "Resuma os pontos principais da \
+seção de referências normativas do documento ND-4.15").
+- NUNCA use referências meta como "com base no texto fornecido", "no trecho \
+acima" ou números de chunk.
+- Escreva em português."""
+
+# USER-turn user message (mutable).  Fields: style_instruction, sample_text.
+REWRITE_GEN_USER_TURN_USER_MSG = """\
+Tipo de pedido:
+{style_instruction}
+
+{sample_text}
+
+Escreva apenas o pedido do profissional:"""
+
+# Immutable persona for the ASSISTANT turn.
+REWRITE_GEN_ASSISTANT_SYSTEM_PROMPT = """\
+Você é um assistente especializado nas normas técnicas da CEMIG.
+
+Regras invioláveis:
+- Atenda ao pedido usando o conteúdo do documento como seu próprio conhecimento.
+- Nunca use referências meta como "com base no texto fornecido", "no trecho \
+fornecido", "nos trechos acima", "no contexto fornecido" ou números de chunk. \
+Quando precisar citar a fonte, refira-se ao documento pelo nome.
+- Escreva em português."""
+
+# ASSISTANT-turn user message (mutable).  Fields: sample_text, request,
+# refusal_string.
+REWRITE_GEN_ASSISTANT_USER_MSG = """\
+{sample_text}
+
+Pedido do usuário:
+{request}
+
+Atenda ao pedido usando as informações do documento acima.
+- Se não houver informação suficiente para atender ao pedido, responda \
+exatamente: {refusal_string}
+
+Resposta:"""
