@@ -5,14 +5,19 @@ DogInstruct-style single-turn generation. For each valid chunk, first generate a
 user question that the chunk could answer, then rewrite the chunk lightly so it
 reads like a natural assistant response to that question.
 
+Output is a finished single-turn conversation (one user question + one assistant
+answer) — back-translation is single-turn, so it is NOT expanded by
+conv_expand_var; it goes straight to the tail (conv_filter → judge → embed_filter).
+
 Role:   GENERATOR
 Input:  HuggingFace dataset (streaming)
-Output: StyledQARow
+Output: ConversationRow (single-turn)
 
 Row shape:
   - sample_id   : [hf_row_id]
   - sample_text : {str(hf_row_id): {text, document_name}}
-  - GEN_TYPE    : "dog_instruct", num_chunks=1, doc_constraint=None
+  - messages    : [{"role": "user", ...}, {"role": "assistant", ...}]
+  - GEN_TYPE    : "dog_instruct", num_chunks=1
   - question_style : "dog_instruct"
 """
 
@@ -51,7 +56,7 @@ from SeedDataGen.generator.prompts import (
     DOG_INSTRUCT_REWRITE_USER_PROMPT,
 )
 from SeedDataGen.registry import register
-from SeedDataGen.schemas import StyledQARow
+from SeedDataGen.schemas import ConversationRow
 from SeedDataGen.utils import (
     assert_hf_dataset_has_fields,
     format_doc_summary,
@@ -253,7 +258,6 @@ async def _rewrite_assistant_answer(
     cfg: DogInstructConfig,
     model_id: str,
     question: str,
-    answer: str,
     sample_text: str,
     *,
     doc_summary: str = "",
@@ -267,7 +271,6 @@ async def _rewrite_assistant_answer(
                     "role": "user",
                     "content": DOG_INSTRUCT_REWRITE_USER_PROMPT.format(
                         question=question,
-                        answer=answer,
                         doc_summary=doc_summary,
                         sample_text=sample_text,
                     ),
@@ -322,7 +325,6 @@ async def _process_batch(
                 cfg,
                 model_id,
                 question,
-                sample["answer_text"],
                 sample["prompt_text"],
                 doc_summary=doc_summary,
             )
@@ -342,8 +344,10 @@ async def _process_batch(
             "origin_id": next_row_id,
             "sample_id": [sample["hf_row_id"]],
             "sample_text": {sample["hf_row_id"]: sample["sample_text"]},
-            "question": generated["question"],
-            "answer": generated["answer"],
+            "messages": [
+                {"role": "user", "content": generated["question"]},
+                {"role": "assistant", "content": generated["answer"]},
+            ],
             "question_style": QUESTION_STYLE,
             "GEN_TYPE": GEN_TYPE,
             "num_chunks": 1,
@@ -364,7 +368,7 @@ class DogInstructPhase(Phase):
     name = "dog_instruct"
     role = PhaseRole.GENERATOR
     input_schema = None
-    output_schema = StyledQARow
+    output_schema = ConversationRow
 
     async def estimate(self, **kwargs) -> Optional[int]:
         cfg = DogInstructConfig()
@@ -410,9 +414,8 @@ class DogInstructPhase(Phase):
                 "dog_instruct / answer rewrite (user)",
                 DOG_INSTRUCT_REWRITE_USER_PROMPT.format(
                     question="[QUESTION]",
-                    answer="[ORIGINAL_ANSWER]",
                     doc_summary=doc_summary,
-                    sample_text="[SAMPLE_TEXT]",
+                    sample_text="[DOCUMENTO]",
                 ),
             ),
         ]

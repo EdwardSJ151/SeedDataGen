@@ -85,8 +85,10 @@ async def test_process_batch_writes_generated_row(monkeypatch, tmp_path):
         for line in output_file.read_text(encoding="utf-8").splitlines()
     ]
     assert len(rows) == 1
-    assert rows[0]["question"] == "Qual e a tensao nominal?"
-    assert rows[0]["answer"] == "A tensao nominal e 13,8 kV."
+    assert rows[0]["messages"] == [
+        {"role": "user", "content": "Qual e a tensao nominal?"},
+        {"role": "assistant", "content": "A tensao nominal e 13,8 kV."},
+    ]
     assert rows[0]["GEN_TYPE"] == GEN_TYPE
     assert rows[0]["question_style"] == QUESTION_STYLE
     assert rows[0]["document_id"] == 7
@@ -126,7 +128,7 @@ async def test_process_batch_falls_back_to_original_answer_when_rewrite_fails(
         json.loads(line)
         for line in output_file.read_text(encoding="utf-8").splitlines()
     ]
-    assert rows[0]["answer"] == "Texto base técnico."
+    assert rows[0]["messages"][1]["content"] == "Texto base técnico."
 
 
 @pytest.mark.asyncio

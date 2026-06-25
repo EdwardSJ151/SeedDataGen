@@ -52,32 +52,47 @@ Gere exatamente um par pergunta-resposta seguindo o estilo indicado, focando no 
 
 # DOG_INSTRUCT — back-translation style question generation + answer rewrite
 DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT = """\
-Você gera uma única pergunta de usuário que possa ser respondida pelo texto fornecido.
+Você é um usuário que faz uma única pergunta a um assistente. Formule a pergunta de \
+modo que a resposta natural seja o conteúdo geral de um documento — você quer a ideia \
+geral do documento como um todo, não um detalhe isolado de uma seção específica. Você \
+pode incluir um pequeno complemento ou especificar um aspecto na pergunta, desde que a pergunta gerada \
+ainda corresponda ao conteúdo do documento como um todo.
+
+O documento está em formato bruto (pode conter marcações de tabela, descrições de \
+figura/imagem e outras estruturas), mas a resposta que você receberá não terá essas \
+marcações; por isso, pergunte sobre a informação/assunto, nunca sobre o formato ou as \
+marcações do documento.
 
 Regras:
 - Escreva apenas a pergunta final, sem explicações adicionais.
-- A pergunta deve ser natural, útil e coerente com o texto.
-- Não invente fatos, cenários ou requisitos que não estejam sustentados pelo texto.
+- A pergunta deve ser natural e abranger a ideia geral do documento, não um único detalhe isolado.
+- Não se refira às marcações nem ao formato do documento.
+- Não invente fatos, cenários ou requisitos que não estejam sustentados pelo conteúdo.
 - Não use referências meta como "o texto fornecido", "o trecho", "o chunk" ou números de chunk; ao citar a fonte, refira-se ao documento pelo nome.
 - Responda em português."""
 
 
 DOG_INSTRUCT_QUESTION_USER_PROMPT = """\
-{doc_summary}Texto:
+{doc_summary}Documento (formato bruto):
 {sample_text}
 
-Gere uma única pergunta que um usuário poderia fazer para receber esse texto como resposta.
-Escreva apenas a pergunta."""
+Escreva uma única pergunta de usuário cuja resposta seja o conteúdo geral deste documento."""
 
 
 DOG_INSTRUCT_REWRITE_SYSTEM_PROMPT = """\
-Você reescreve respostas de assistente para que combinem melhor com a pergunta do usuário.
+Você é um assistente especializado. Você recebe uma pergunta de usuário e um documento \
+que é a resposta a essa pergunta. O documento está em formato bruto e pouco acessível \
+(pode conter marcações de tabela, descrições de figura/imagem e outras estruturas). Sua \
+tarefa é reescrevê-lo levemente para que soe como a resposta natural de um assistente e \
+se ajuste à pergunta, sem perder a informação.
 
 Regras:
-- Preserve o conteúdo técnico e factual relevante para a pergunta; não invente novas informações.
-- Mantenha toda informação importante para a pergunta. Detalhes que não dizem respeito à pergunta podem ser removidos, mas apenas quando não fizer sentido mantê-los.
+- O documento é a resposta: mantenha a informação e ajuste apenas a estrutura e a apresentação para ficar natural e acomodar a pergunta (acrescentando markdown, conectando partes do documento para ajudar coesão).
+- Pode renderizar uma tabela de forma legível e, quando relevante, destacar valores específicos dela. Use as descrições de figura/imagem quando forem relevantes.
+- Não mencione as marcações do documento (tabela, figura, imagem, etc.) nem comente que está reformatando.
+- Não altere, não acrescente e não explique o conteúdo factual; não invente informações.
+- Remova apenas detalhes que não dizem respeito à pergunta; mantenha o resto.
 - Nunca use referências meta como "com base no texto fornecido", "no trecho", "nos trechos acima", "no contexto fornecido", "no chunk" ou números de chunk; responda como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
-- Reescreva de forma natural, clara e coerente com a pergunta.
 - Escreva apenas a resposta final, em português."""
 
 
@@ -85,14 +100,11 @@ DOG_INSTRUCT_REWRITE_USER_PROMPT = """\
 Pergunta do usuário:
 {question}
 
-Resposta original:
-{answer}
-
-{doc_summary}Se necessário, use o texto abaixo apenas para preservar fidelidade ao conteúdo original:
+{doc_summary}Documento que responde à pergunta (formato bruto):
 {sample_text}
 
-Reescreva a resposta para que ela se encaixe melhor no que o usuário está pedindo, sem mudar muito o conteúdo e sem perder informações técnicas.
-Escreva apenas a resposta reescrita."""
+Reescreva o documento como um assistente responderia à pergunta, ajustando apenas a estrutura e a apresentação e mantendo a informação relevante.
+Escreva apenas a resposta final."""
 
 
 # QA_LOCAL_MULTIHOP
