@@ -150,46 +150,6 @@ def _chunk_text_and_name(value: Any) -> tuple[str, Optional[str]]:
     return str(value), None
 
 
-def _format_chunk_header(chunk_id: Any, document_name: Optional[str] = None) -> str:
-    if document_name:
-        return f"[Chunk {chunk_id} | {document_name}]"
-    return f"[Chunk {chunk_id}]"
-
-
-def format_sample_text(sample_text: Union[str, Dict, List[Dict]]) -> str:
-    """
-    Render *sample_text* into a flat string suitable for prompt injection.
-
-    Accepts three shapes:
-      - str:                 returned unchanged (legacy / single-chunk).
-      - dict {id: text}:      rendered as labelled chunks (multihop).
-      - dict {id: {text, document_name}}: chunk label includes document name.
-      - list[{chunk_id/hf_row_id, text, document_name?}]: labelled chunks.
-    """
-    if isinstance(sample_text, str):
-        return sample_text
-
-    parts: List[str] = []
-    if isinstance(sample_text, dict):
-        for chunk_id, value in sample_text.items():
-            text, document_name = _chunk_text_and_name(value)
-            parts.append(f"{_format_chunk_header(chunk_id, document_name)}\n{text}")
-    elif isinstance(sample_text, list):
-        for entry in sample_text:
-            if not isinstance(entry, dict):
-                parts.append(str(entry))
-                continue
-            chunk_id = entry.get("chunk_id", entry.get("hf_row_id", "?"))
-            text = entry.get("text", "")
-            document_name = entry.get("document_name")
-            doc_name = str(document_name) if document_name is not None else None
-            parts.append(f"{_format_chunk_header(chunk_id, doc_name)}\n{text}")
-    else:
-        return str(sample_text)
-
-    return "\n\n".join(parts)
-
-
 def extract_doc_names(sample_text: Union[str, Dict, List[Dict]]) -> List[str]:
     """
     Return the unique document names referenced by *sample_text*, in first-seen
@@ -219,11 +179,12 @@ def format_sample_text_for_prompt(sample_text: Union[str, Dict, List[Dict]]) -> 
     """
     Render *sample_text* for conversation/judge prompts as <documento> blocks.
 
-    Unlike :func:`format_sample_text`, this never emits the leaked ``[Chunk N]``
-    numbering — only the document name is kept (as a tag attribute), so the model
-    can reference the document by name without surfacing chunk metadata.
+    Never emits chunk-number metadata — only the document name is kept (as a tag
+    attribute), so the model can reference the document by name without surfacing
+    chunk numbers.
 
-    Shapes accepted mirror :func:`format_sample_text`; multihop renders one
+    Accepts the same shapes as the row's ``sample_text`` (plain str, ``{id: text}``,
+    ``{id: {text, document_name}}``, or a list of chunk dicts); multihop renders one
     ``<documento>`` block per chunk, preserving each chunk's ``document_name``.
     """
     if isinstance(sample_text, str):

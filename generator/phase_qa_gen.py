@@ -49,7 +49,7 @@ from SeedDataGen.registry import register
 from SeedDataGen.schemas import QARow
 from SeedDataGen.utils import (
     assert_hf_dataset_has_fields,
-    format_sample_text,
+    format_sample_text_for_prompt,
     get_last_processed_id,
     get_processed_sample_ids,
     make_chunk_entry,
@@ -119,7 +119,7 @@ def _next_valid_samples(ds_iter, n: int, skip_ids: set) -> List[Dict[str, Any]]:
         out.append({
             "hf_row_id": hf_row_id,
             "sample_text": chunk_entry,
-            "prompt_text": format_sample_text({hf_row_id: chunk_entry}),
+            "prompt_text": format_sample_text_for_prompt({hf_row_id: chunk_entry}),
         })
         if len(out) >= n:
             break

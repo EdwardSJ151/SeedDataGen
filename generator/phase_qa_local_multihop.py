@@ -37,7 +37,7 @@ from SeedDataGen.registry import register
 from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
     format_doc_summary,
-    format_sample_text,
+    format_sample_text_for_prompt,
     get_last_processed_id,
     get_sample_group_key,
     is_summary_enabled,
@@ -297,7 +297,7 @@ class QALocalMultihopPhase(Phase):
             sample_id = [c["hf_row_id"] for c in window]
             sample_text = sample_text_from_chunks(window)
             group_key = get_sample_group_key(sample_id)
-            context_text = format_sample_text(sample_text)
+            context_text = format_sample_text_for_prompt(sample_text)
             doc_id = window[0].get("doc_id")
             doc_summary = format_doc_summary(
                 summary_map.get(str(doc_id)) if doc_id is not None else None

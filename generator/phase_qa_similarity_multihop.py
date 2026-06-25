@@ -48,7 +48,7 @@ from SeedDataGen.schemas import StyledQARow
 from SeedDataGen.utils import (
     format_doc_summaries_for_docs,
     format_doc_summary,
-    format_sample_text,
+    format_sample_text_for_prompt,
     get_last_processed_id,
     get_sample_group_key,
     is_summary_enabled,
@@ -414,7 +414,7 @@ class QASimilarityMultihopPhase(Phase):
             emitted_keys.add(group_key)
 
             sample_text = sample_text_from_chunks(group)
-            context_text = format_sample_text(sample_text)
+            context_text = format_sample_text_for_prompt(sample_text)
             doc_ids = [c["doc_id"] for c in group]
             doc_summary = format_doc_summaries_for_docs(summary_map, doc_ids) if summary_map else ""
 

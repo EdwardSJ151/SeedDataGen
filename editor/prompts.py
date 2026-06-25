@@ -12,7 +12,8 @@ Regras:
 2. Não invente, não extrapole.
 3. Mantenha o foco na pergunta — não desvie para outros tópicos.
 4. A resposta deve ser mais rica que a original, mas ainda direta e objetiva.
-5. Responda em português.
+5. Não use referências meta ("o texto fornecido", "o trecho", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+6. Responda em português.
 
 Texto:
 {sample_text}
@@ -38,7 +39,8 @@ Regras:
 3. Não repita perguntas anteriores.
 4. Mantenha-se no conteúdo do texto.
 5. Seja natural e breve.
-6. Use português.
+6. Não use referências meta ("o texto fornecido", "o trecho", "o chunk" ou números de chunk); ao citar a fonte, refira-se ao documento pelo nome.
+7. Use português.
 
 Texto:
 {sample_text}
@@ -66,7 +68,8 @@ Regras:
 4. Explore um aspecto do texto que ainda não tenha sido abordado nas conversas anteriores listadas abaixo.
 5. Mantenha-se no conteúdo do texto.
 6. Seja natural e breve.
-7. Use português.
+7. Não use referências meta ("o texto fornecido", "o trecho", "o chunk" ou números de chunk); ao citar a fonte, refira-se ao documento pelo nome.
+8. Use português.
 
 Texto:
 {sample_text}

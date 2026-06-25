@@ -16,7 +16,8 @@ Siga estas instruções:
 4. Perguntas: claras e concisas.
 5. Respostas: claras e completas para serem úteis como resposta de um assistente, sem ser prolixo.
 6. Use texto simples e linguagem acessível.
-7. Cada par deve estar em uma linha:
+7. Não use referências meta nas perguntas nem nas respostas (por exemplo "o texto fornecido", "o trecho", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+8. Cada par deve estar em uma linha:
    "Pergunta: ... Resposta: ..."
 
 Texto:
@@ -34,8 +35,9 @@ Regras gerais:
 1. Foque em informações factuais e importantes do texto.
 2. A resposta deve ser clara, completa e útil como resposta de um assistente.
 3. Use texto simples e linguagem acessível.
-4. Responda em português.
-5. Formate a resposta exatamente assim:
+4. Não use referências meta na pergunta nem na resposta (por exemplo "o texto fornecido", "o trecho", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+5. Responda em português.
+6. Formate a resposta exatamente assim:
    Pergunta: ...
    Resposta: ...
 
@@ -110,8 +112,9 @@ Regras gerais:
 5. Foque em informações factuais e importantes.
 6. A resposta deve ser clara, completa e útil como resposta de um assistente.
 7. Use texto simples e linguagem acessível.
-8. Responda em português.
-9. Formate a resposta exatamente assim:
+8. Não use referências meta na pergunta nem na resposta (por exemplo "o texto fornecido", "os trechos acima", "trecho 1/2", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+9. Responda em português.
+10. Formate a resposta exatamente assim:
    Pergunta: ...
    Resposta: ...
 
@@ -141,8 +144,9 @@ Regras gerais:
 5. Foque em informações factuais e importantes.
 6. A resposta deve ser clara, completa e útil como resposta de um assistente.
 7. Use texto simples e linguagem acessível.
-8. Responda em português.
-9. Formate a resposta exatamente assim:
+8. Não use referências meta na pergunta nem na resposta (por exemplo "o texto fornecido", "os trechos acima", "trecho 1/2", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+9. Responda em português.
+10. Formate a resposta exatamente assim:
    Pergunta: ...
    Resposta: ...
 
@@ -172,8 +176,9 @@ Regras gerais:
 6. Foque em informações factuais e importantes.
 7. A resposta deve ser clara, completa e útil como resposta de um assistente.
 8. Use texto simples e linguagem acessível.
-9. Responda em português.
-10. Formate a resposta exatamente assim:
+9. Não use referências meta na pergunta nem na resposta (por exemplo "o texto fornecido", "os trechos acima", "trecho 1/2", "o chunk" ou números de chunk); escreva como conhecimento próprio e, ao citar a fonte, refira-se ao documento pelo nome.
+10. Responda em português.
+11. Formate a resposta exatamente assim:
    Pergunta: ...
    Resposta: ...
 

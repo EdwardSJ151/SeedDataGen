@@ -44,7 +44,7 @@ from SeedDataGen.schemas import ConversationRow, QARow
 from SeedDataGen.utils import (
     count_jsonl_lines,
     format_conversation_history,
-    format_sample_text,
+    format_sample_text_for_prompt,
     format_user_history,
     get_last_processed_id,
     get_max_int_field,
@@ -178,7 +178,7 @@ async def _process_batch(
             async with sem:
                 return await _expand_conversation(
                     client, cfg, model_id,
-                    format_sample_text(item["sample_text"]),
+                    format_sample_text_for_prompt(item["sample_text"]),
                     {"question": item["question"], "answer": item["answer"]},
                 )
 
@@ -209,7 +209,7 @@ async def _process_batch(
                 effective_prev = prev_qs if prev_qs else None
                 return await _expand_conversation(
                     client, cfg, model_id,
-                    format_sample_text(item["sample_text"]),
+                    format_sample_text_for_prompt(item["sample_text"]),
                     {"question": item["question"], "answer": item["answer"]},
                     previous_questions=effective_prev,
                 )
