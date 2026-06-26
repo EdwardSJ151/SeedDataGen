@@ -66,6 +66,9 @@ def iter_jsonl_batches(
 
 
 def write_jsonl_batch(filepath: str, batch: List[Dict]) -> None:
+    parent = os.path.dirname(filepath)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     with open(filepath, "a", encoding="utf-8") as f:
         for obj in batch:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
