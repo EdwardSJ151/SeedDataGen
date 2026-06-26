@@ -250,7 +250,7 @@ class QASimilarityMultihopPhase(Phase):
         )
         if n_chunks > 50_000:
             print(
-                f"  [qa_similarity_multihop] ⚠  large collection — similarity scan may take a while",
+                "  [qa_similarity_multihop] ⚠  large collection — similarity scan may take a while",
                 flush=True,
             )
 

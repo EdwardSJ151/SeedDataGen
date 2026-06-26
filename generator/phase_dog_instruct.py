@@ -371,7 +371,6 @@ class DogInstructPhase(Phase):
     output_schema = ConversationRow
 
     async def estimate(self, **kwargs) -> Optional[int]:
-        cfg = DogInstructConfig()
         num_rows = int(kwargs.get("num_rows", NUM_ROWS))
         exhaustive = num_rows < 0
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)

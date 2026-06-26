@@ -1,7 +1,5 @@
 """Tests for filter/phase_qa_filter.py — pure Python, no LLM required."""
 
-import pytest
-
 from SeedDataGen.filter.phase_qa_filter import QAFilterConfig, QAFilterPhase, _filter_qa_group
 from SeedDataGen.schemas import StyledQARow
 

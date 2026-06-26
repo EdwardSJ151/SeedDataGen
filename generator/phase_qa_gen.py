@@ -20,7 +20,6 @@ streaming index when that column is absent.
 """
 
 import asyncio
-import math
 import os
 from typing import Any, Dict, List, Optional
 

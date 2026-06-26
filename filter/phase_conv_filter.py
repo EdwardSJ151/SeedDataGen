@@ -28,6 +28,7 @@ from SeedDataGen.utils import (
     get_last_processed_id,
     get_max_int_field,
     is_refusal,
+    is_single_turn,
     iter_jsonl_batches,
     levenshtein,
     write_jsonl_batch,
@@ -68,14 +69,21 @@ def _filter_conversation(
 ) -> Optional[List[Dict[str, str]]]:
     """
     Return the (possibly truncated) messages to keep, or None to drop the
-    conversation.  Refusal truncation runs first; the resulting prefix is then
-    held to the same heuristics (min_messages, assistant_min_len, dup checks),
-    so an early refusal that collapses the conversation to the seed pair is
-    dropped by min_messages.
+    conversation.
+
+    The length floor adapts to the conversation's intent, read from the
+    generator's raw output **before** truncation: a single-turn conversation
+    (one user turn → 2 messages, e.g. dog_instruct / rewrite_gen) needs one
+    pair; a multi-turn one uses ``cfg.min_messages`` (default 4). Measuring
+    before truncation is what disambiguates an intended single-turn (kept) from
+    a multi-turn that an early refusal collapses to one pair (dropped — it was
+    multi-turn in the input, so its floor stays at ``min_messages``).
     """
+    single_turn = is_single_turn(messages)
     messages = _truncate_at_refusal(messages)
 
-    if len(messages) < cfg.min_messages:
+    min_len = 2 if single_turn else cfg.min_messages
+    if len(messages) < min_len:
         return None
 
     for m in messages:

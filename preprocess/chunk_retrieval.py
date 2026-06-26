@@ -168,7 +168,6 @@ def similarity_groups_iter(
 
     meta_by_idx = data["metadatas"]
     docs_by_idx = data["documents"]
-    idx_by_id = {cid: i for i, cid in enumerate(ids)}
 
     def _chunk(idx: int, sim: float) -> Dict[str, Any]:
         meta = meta_by_idx[idx]

@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import STOP_STRINGS, VLLM_API_KEY, VLLM_BASE_URL
-from SeedDataGen.judge.prompts import JUDGE_PROMPT
+from SeedDataGen.judge.prompts import JUDGE_PROMPT, JUDGE_PROMPT_SINGLE_TURN
 from SeedDataGen.registry import register
 from SeedDataGen.schemas import ConversationRow, JudgedConversationRow
 from SeedDataGen.utils import (
@@ -27,6 +27,7 @@ from SeedDataGen.utils import (
     format_sample_text_for_prompt,
     get_last_processed_id,
     get_max_int_field,
+    is_single_turn,
     iter_jsonl_batches,
     parse_judge_scores,
     write_jsonl_batch,
@@ -52,7 +53,10 @@ async def _judge_conversation(
     messages: List[Dict[str, str]],
 ) -> Optional[str]:
     conv_str = format_conversation_for_judge(messages)
-    prompt = JUDGE_PROMPT.format(sample_text=sample_text, conversation=conv_str)
+    # Single-turn conversations are scored with the "Completude" criterion instead
+    # of "Diversidade das interações" (which is meaningless for one turn).
+    template = JUDGE_PROMPT_SINGLE_TURN if is_single_turn(messages) else JUDGE_PROMPT
+    prompt = template.format(sample_text=sample_text, conversation=conv_str)
     try:
         resp = await client.chat.completions.create(
             model=model_id,
@@ -106,12 +110,13 @@ async def _process_batch(
             continue
         item["input_id"] = item["id"]
         item["id"] = next_id
+        fifth_key = "completude" if is_single_turn(item["messages"]) else "diversidade"
         item["scores"] = {
             "fidelidade": scores[0],
             "correcao": scores[1],
             "clareza": scores[2],
             "coerencia": scores[3],
-            "diversidade": scores[4],
+            fifth_key: scores[4],
         }
         item["avg_score"] = round(avg, 2)
         rows.append(item)

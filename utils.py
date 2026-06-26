@@ -8,9 +8,8 @@ conversation formatting, score parsing, and Pydantic schema helpers.
 import json
 import os
 import re
-from typing import Any, Dict, Iterator, List, Optional, Type, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 
-from pydantic import BaseModel
 from rapidfuzz.distance import Levenshtein as _RapidfuzzLevenshtein
 
 
@@ -70,11 +69,6 @@ def write_jsonl_batch(filepath: str, batch: List[Dict]) -> None:
     with open(filepath, "a", encoding="utf-8") as f:
         for obj in batch:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-
-
-def write_jsonl_line(filepath: str, obj: Dict) -> None:
-    with open(filepath, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
 def count_jsonl_lines(filepath: str) -> int:
@@ -148,31 +142,6 @@ def _chunk_text_and_name(value: Any) -> tuple[str, Optional[str]]:
         document_name = str(raw_name) if raw_name is not None else None
         return text, document_name
     return str(value), None
-
-
-def extract_doc_names(sample_text: Union[str, Dict, List[Dict]]) -> List[str]:
-    """
-    Return the unique document names referenced by *sample_text*, in first-seen
-    order.  Empty list for legacy plain-string sample_text (no name available).
-    """
-    names: List[str] = []
-    seen: set = set()
-
-    def _add(name: Optional[str]) -> None:
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
-
-    if isinstance(sample_text, dict):
-        for value in sample_text.values():
-            _, document_name = _chunk_text_and_name(value)
-            _add(document_name)
-    elif isinstance(sample_text, list):
-        for entry in sample_text:
-            if isinstance(entry, dict):
-                name = entry.get("document_name")
-                _add(str(name) if name is not None else None)
-    return names
 
 
 def format_sample_text_for_prompt(sample_text: Union[str, Dict, List[Dict]]) -> str:
@@ -357,20 +326,6 @@ def get_sample_group_key(sample_id: Union[int, List[int]]) -> str:
     return str(sample_id)
 
 
-# Pydantic schema helpers
-_T = Type[BaseModel]
-
-
-def validate_row(schema: _T, data: Dict) -> BaseModel:
-    """Validate a raw dict against *schema*, returning a model instance."""
-    return schema.model_validate(data)
-
-
-def dump_row(obj: BaseModel) -> Dict:
-    """Serialise a Pydantic model to a plain dict for JSONL output."""
-    return obj.model_dump()
-
-
 # Levenshtein distance
 def levenshtein(a: str, b: str) -> int:
     """
@@ -423,6 +378,11 @@ def format_conversation_for_judge(messages: List[Dict[str, str]]) -> str:
     return format_conversation_history(messages)
 
 
+def is_single_turn(messages: List[Dict[str, str]]) -> bool:
+    """True when the conversation has at most one user turn (single-turn QA)."""
+    return sum(1 for m in messages if m.get("role") == "user") <= 1
+
+
 def _normalize_refusal(text: str) -> str:
     """Lowercase, strip whitespace, drop a trailing period for refusal matching."""
     return text.strip().casefold().rstrip(".").strip()
@@ -439,9 +399,11 @@ def is_refusal(text: str) -> bool:
 
 
 # Score parsing (Phase 5 — LLM judge output)
+# The 5th label is "diversidade" (multi-turn) or "completude" (single-turn judge
+# prompt); both are accepted so parse stays at exactly 5 scores either way.
 _SCORE_LABELS = ["fidelidade", "correção", "clareza", "coerência", "diversidade"]
 _SCORE_RE = re.compile(
-    r"(?:fidelidade|correção|corre[cç][aã]o|clareza|coer[eê]ncia|diversidade)\s*:\s*(\d(?:[.,]\d)?)",
+    r"(?:fidelidade|correção|corre[cç][aã]o|clareza|coer[eê]ncia|diversidade|completude)\s*:\s*(\d(?:[.,]\d)?)",
     re.IGNORECASE,
 )
 

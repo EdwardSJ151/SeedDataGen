@@ -102,6 +102,7 @@ _bootstrap_pipeline_env()
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL, validate_pipeline_env
 from SeedDataGen.registry import get_phase, list_phases
+from SeedDataGen.utils import count_jsonl_lines
 
 # Auto-discover and import all phase_*.py modules so their @register
 # decorators fire before we look anything up in the registry.
@@ -334,6 +335,39 @@ def _dump_prompts_multi(
 
 
 # Runner
+def _finalize_phase_output(
+    phase: Phase, out_file: str, empties: list[tuple[str, str]]
+) -> None:
+    """
+    Ensure *out_file* exists after a phase runs.  A phase that keeps 0 rows writes
+    no file, which would crash the next phase on open().  Create the empty file,
+    warn, and record it for the end-of-run summary.  PREPROCESS phases (which
+    produce a vectorstore, not a JSONL) are skipped.
+    """
+    if phase.role == PhaseRole.PREPROCESS or not out_file:
+        return
+    if count_jsonl_lines(out_file) > 0:
+        return
+    parent = os.path.dirname(out_file)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    open(out_file, "a").close()
+    print(f"[warning] phase '{phase.name}' produced 0 rows — wrote empty file {out_file}")
+    empties.append((phase.name, out_file))
+
+
+def _print_empty_summary(
+    empties: list[tuple[str, str]], header: str = "EMPTY OUTPUTS (0 rows)"
+) -> None:
+    if not empties:
+        return
+    print(f"\n{'=' * 60}")
+    print(header)
+    print(f"{'=' * 60}")
+    for name, path in empties:
+        print(f"  - {name} → {path}")
+
+
 async def run_pipeline(
     entries: list[dict[str, Any]],
     phases: list[Phase],
@@ -344,7 +378,8 @@ async def run_pipeline(
     output_override: Optional[str] = None,
     num_rows: int = NUM_ROWS,
     batch_size: int = BATCH_SIZE,
-) -> None:
+) -> list[tuple[str, str]]:
+    empties: list[tuple[str, str]] = []
 
     if only is not None:
         # Single-phase mode
@@ -378,7 +413,9 @@ async def run_pipeline(
                 batch_size=batch_size,
                 **extra_kwargs,
             )
-        return
+        _finalize_phase_output(phase, out_file, empties)
+        _print_empty_summary(empties)
+        return empties
 
     # Full / partial pipeline
     start_idx = 0
@@ -423,12 +460,15 @@ async def run_pipeline(
                 batch_size=batch_size,
                 **extra_kwargs,
             )
+        _finalize_phase_output(phase, out_file, empties)
 
     print(f"\n{'=' * 60}")
     print("PIPELINE COMPLETE")
     print(f"{'=' * 60}")
     final_output = entries[-1]["output"]
     print(f"Final output: {final_output}")
+    _print_empty_summary(empties)
+    return empties
 
 
 # Multi-run orchestrator
@@ -487,6 +527,7 @@ async def _run_multi(
     if preprocess_entry:
         await _run_preprocess(preprocess_entry, batch_size)
 
+    all_empties: list[tuple[str, str]] = []
     for run_idx, run in enumerate(runs, start=1):
         entries, run_config = _build_run_entries(run, tail_entries)
         os.makedirs(run["output_dir"], exist_ok=True)
@@ -502,11 +543,18 @@ async def _run_multi(
                 else int(os.environ.get("NUM_ROWS", str(NUM_ROWS)))
             )
             phases = _build_and_validate(entries)
-            await run_pipeline(entries, phases, num_rows=num_rows, batch_size=batch_size)
+            run_empties = await run_pipeline(
+                entries, phases, num_rows=num_rows, batch_size=batch_size
+            )
+            all_empties.extend(
+                (f"run {run_idx}/{run['generator']}: {name}", path)
+                for name, path in run_empties
+            )
 
     print(f"\n{'=' * 60}")
     print("ALL RUNS COMPLETE")
     print(f"{'=' * 60}")
+    _print_empty_summary(all_empties, header="EMPTY OUTPUTS ACROSS ALL RUNS (0 rows)")
 
 
 # Dry-run
@@ -554,8 +602,8 @@ async def _dry_run_multi(
             print(f"  {gen_name:<35} {est:>12,}  QA rows")
     if any(e is not None for _, e in rows_by_run):
         print(f"  {'TOTAL (before tail filtering)':<35} {total:>12,}  QA rows")
-    print(f"\n  Tail phases (qa_filter → conv_expand_var → conv_filter → judge → embed_filter)")
-    print(f"  typically keep 20–50% of QA rows as final conversations.")
+    print("\n  Tail phases (qa_filter → conv_expand_var → conv_filter → judge → embed_filter)")
+    print("  typically keep 20–50% of QA rows as final conversations.")
     print(f"{'=' * 60}")
 
 
