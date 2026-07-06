@@ -1,0 +1,24 @@
+# DogInstruct back-translation pipeline.
+# Single-turn generator → straight to conv_filter → judge → embed_filter
+# (dog_instruct is single-turn, so NO qa_filter / conv_expand step).
+
+env:
+  VLLM_BASE_URL: "http://container_name:8000/v1"
+  DATASET_ID: "dataset"
+  DATASET_SPLIT: "train"
+  DATASET_DOC_NAME_FIELD: "document_name"
+  DATASET_MAX_CHARS: "1000000"
+  NUM_ROWS: "-1"
+
+pipeline:
+  - phase: dog_instruct
+    output: dog_instruct.jsonl
+
+  - phase: conv_filter
+    output: dog_conv_filtered.jsonl
+
+  - phase: judge
+    output: dog_judged.jsonl
+
+  - phase: embed_filter
+    output: dog_final.jsonl

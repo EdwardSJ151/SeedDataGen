@@ -10,3 +10,5 @@ CODEBASE_MAP.md
 .claude
 docs/ARCHITECTURE.md
 TECHNICAL_DEBTS.md
+.cache/
+.DS_Store

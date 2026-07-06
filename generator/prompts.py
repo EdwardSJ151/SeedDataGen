@@ -54,18 +54,21 @@ Gere exatamente um par pergunta-resposta seguindo o estilo indicado, focando no 
 DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT = """\
 Você é um usuário que faz uma única pergunta a um assistente. Formule a pergunta de \
 modo que a resposta natural seja o conteúdo geral de um documento — você quer a ideia \
-geral do documento como um todo, não um detalhe isolado de uma seção específica. Você \
-pode incluir um pequeno complemento ou especificar um aspecto na pergunta, desde que a pergunta gerada \
-ainda corresponda ao conteúdo do documento como um todo.
+geral do documento como um todo. Você pode incluir um pequeno complemento ou \
+especificar um aspecto na pergunta, desde que a pergunta gerada ainda corresponda ao \
+conteúdo do documento.
 
 O documento está em formato bruto (pode conter marcações de tabela, descrições de \
 figura/imagem e outras estruturas), mas a resposta que você receberá não terá essas \
 marcações; por isso, pergunte sobre a informação/assunto, nunca sobre o formato ou as \
 marcações do documento.
 
+Perfil de quem pergunta:
+{persona_instruction}
+
 Regras:
 - Escreva apenas a pergunta final, sem explicações adicionais.
-- A pergunta deve ser natural e abranger a ideia geral do documento, não um único detalhe isolado.
+- A pergunta deve ser natural e ancorada no conteúdo do documento; deixe o perfil de quem pergunta definir o estilo, o vocabulário, a extensão e o foco da pergunta.
 - Não se refira às marcações nem ao formato do documento.
 - Não invente fatos, cenários ou requisitos que não estejam sustentados pelo conteúdo.
 - Não use referências meta como "o texto fornecido", "o trecho", "o chunk" ou números de chunk; ao citar a fonte, refira-se ao documento pelo nome.
@@ -105,6 +108,78 @@ Pergunta do usuário:
 
 Reescreva o documento como um assistente responderia à pergunta, ajustando apenas a estrutura e a apresentação e mantendo a informação relevante.
 Escreva apenas a resposta final."""
+
+DOG_INSTRUCT_PERSONAS: dict[str, str] = {
+    "direto_objetivo": (
+        "Funcionário da CEMIG que quer a resposta mais curta e direta possível, sem rodeios. "
+        "Pergunta enxuta, focada em uma informação pontual."
+    ),
+    "detalhista": (
+        "Funcionário da CEMIG que quer entender o contexto completo por trás da norma, não só o "
+        "dado pontual. A pergunta pede justificativa, contexto ou motivo."
+    ),
+    "tecnico_experiente": (
+        "Engenheiro ou técnico experiente que usa naturalmente a nomenclatura e as siglas das "
+        "normas (ND, CE, RDP, etc.) na própria pergunta, com jargão técnico e códigos de norma."
+    ),
+    "leigo_area": (
+        "Funcionário de outra área (ex.: administrativo) que não conhece os termos técnicos e "
+        "pergunta em linguagem cotidiana, evitando jargão e usando termos genéricos ou aproximados."
+    ),
+    "comparador_normas": (
+        "Funcionário que precisa comparar dois documentos ou assuntos técnicos para decidir qual se "
+        "aplica ao caso dele. A pergunta menciona mais de um documento/tema e pede a diferença entre eles."
+    ),
+    "pergunta_incompleta": (
+        "Funcionário que digita rápido e deixa informação implícita. A pergunta omite algum dado que "
+        "normalmente seria necessário (ex.: não especifica o tipo de estrutura ou a norma)."
+    ),
+    "aplicacao_campo": (
+        "Técnico de campo que quer saber como aplicar a norma na prática, durante uma instalação ou "
+        "manutenção real. A pergunta é voltada à execução prática, não à teoria da norma."
+    ),
+    "confunde_documentos": (
+        "Funcionário que confunde o nome ou número de normas parecidas e cita um documento próximo, "
+        "mas não exatamente o correto, na pergunta."
+    ),
+    "urgente": (
+        "Funcionário que precisa da informação rapidamente para resolver um problema em andamento. "
+        "Pergunta curta, com tom de urgência, focada em resolver algo específico agora."
+    ),
+    "verificador_fonte": (
+        "Funcionário que quer confirmar a informação e pede explicitamente a norma, item ou trecho "
+        "exato que embasa a resposta, não só a informação em si."
+    ),
+    "pergunta_multipla": (
+        "Funcionário que aproveita a mesma mensagem para fazer duas ou três perguntas relacionadas ao "
+        "mesmo tema, conectadas pelo mesmo assunto."
+    ),
+    "confirmacao": (
+        "Funcionário que já tem uma suposição em mente e só quer confirmar se está certa. Pergunta "
+        'formulada como confirmação ("está correto que...", "é verdade que..."), não como pergunta aberta.'
+    ),
+    "gestor_resumo": (
+        "Gestor que precisa de um resumo objetivo de uma norma para repassar à equipe ou usar em um "
+        "relatório. A pergunta pede um resumo ou visão geral, não o detalhe técnico completo."
+    ),
+    "informal": (
+        "Funcionário que escreve de forma informal, como numa mensagem de chat corrido, com tom "
+        "coloquial e direto, sem a formalidade de um texto técnico."
+    ),
+    "ja_sabe_o_documento": (
+        "Funcionário que já sabe o número ou nome exato da norma e pergunta diretamente sobre o "
+        "conteúdo dela, citando o código do documento sem precisar descrevê-lo pelo assunto."
+    ),
+    "compara_versao_anterior": (
+        "Funcionário que quer saber se algo mudou em relação a uma versão anterior de uma norma ou "
+        "procedimento. A pergunta menciona mudança, atualização ou versão anterior do documento."
+    ),
+    "resposta_para_repasse": (
+        "Funcionário que vai repassar a resposta diretamente a outra pessoa e por isso quer um texto "
+        "pronto para reenviar como está. A pergunta pede algo 'pronto para copiar e colar', 'sem "
+        "enrolação' ou 'direto', deixando claro que o texto será reutilizado sem edição."
+    ),
+}
 
 
 # QA_LOCAL_MULTIHOP
