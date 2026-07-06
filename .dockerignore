@@ -1,0 +1,30 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local env / secrets
+.env
+
+# Caches (HF datasets, torch, chroma)
+.cache/
+*.cache
+
+# Pipeline outputs
+*.jsonl
+out/
+combined/
+prompts_preview.txt
+dog_prompts.txt
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

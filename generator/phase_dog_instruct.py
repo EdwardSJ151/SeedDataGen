@@ -9,6 +9,11 @@ Output is a finished single-turn conversation (one user question + one assistant
 answer) — back-translation is single-turn, so it is NOT expanded by
 conv_expand_var; it goes straight to the tail (conv_filter → judge → embed_filter).
 
+For each valid chunk, one QA row is produced per configured persona: the persona
+steers ONLY the user question (its perspective/style is injected into the question
+prompt); the assistant rewrite is unaffected. Available personas live in
+DOG_INSTRUCT_PERSONAS (SeedDataGen/generator/prompts.py).
+
 Role:   GENERATOR
 Input:  HuggingFace dataset (streaming)
 Output: ConversationRow (single-turn)
@@ -18,15 +23,17 @@ Row shape:
   - sample_text : {str(hf_row_id): {text, document_name}}
   - messages    : [{"role": "user", ...}, {"role": "assistant", ...}]
   - GEN_TYPE    : "dog_instruct", num_chunks=1
-  - question_style : "dog_instruct"
+  - question_style : the persona that produced the question
 """
 
 import asyncio
+import math
 import os
 import re
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from tqdm import tqdm
 
@@ -50,6 +57,7 @@ from SeedDataGen.config import (
     validate_pipeline_env,
 )
 from SeedDataGen.generator.prompts import (
+    DOG_INSTRUCT_PERSONAS,
     DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT,
     DOG_INSTRUCT_QUESTION_USER_PROMPT,
     DOG_INSTRUCT_REWRITE_SYSTEM_PROMPT,
@@ -71,7 +79,6 @@ from SeedDataGen.utils import (
 )
 
 GEN_TYPE = "dog_instruct"
-QUESTION_STYLE = "dog_instruct"
 
 
 class DogInstructConfig(BaseSettings):
@@ -82,6 +89,7 @@ class DogInstructConfig(BaseSettings):
         enable_decoding=False,
     )
 
+    personas: List[str] = list(DOG_INSTRUCT_PERSONAS)
     question_temperature: float = 0.7
     question_top_p: float = 0.9
     question_max_tokens: int = 256
@@ -90,6 +98,13 @@ class DogInstructConfig(BaseSettings):
     rewrite_max_tokens: int = 1024
     batch_size: int = 32
     max_concurrent: int = 64
+
+    @field_validator("personas", mode="before")
+    @classmethod
+    def _parse_personas(cls, v):
+        if isinstance(v, str):
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
 
 def _normalize(s: str) -> str:
@@ -221,14 +236,26 @@ async def _generate_user_question(
     cfg: DogInstructConfig,
     model_id: str,
     sample_text: str,
+    persona: str,
     *,
     doc_summary: str = "",
 ) -> Optional[str]:
+    persona_instruction = DOG_INSTRUCT_PERSONAS.get(persona)
+    if persona_instruction is None:
+        print(
+            f"[dog_instruct] Unknown persona '{persona}'. "
+            f"Available: {list(DOG_INSTRUCT_PERSONAS)}"
+        )
+        return None
+
+    system_prompt = DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT.format(
+        persona_instruction=persona_instruction
+    )
     try:
         resp = await client.chat.completions.create(
             model=model_id,
             messages=[
-                {"role": "system", "content": DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": DOG_INSTRUCT_QUESTION_USER_PROMPT.format(
@@ -303,18 +330,26 @@ async def _process_batch(
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
-    async def _one(sample: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    tasks = []
+    for sample in samples:
         doc_summary = format_doc_summary(
             summary_map.get(str(sample["doc_id"]))
             if sample.get("doc_id") is not None
             else None
         )
+        for persona in cfg.personas:
+            tasks.append((sample, persona, doc_summary))
+
+    async def _one(
+        sample: Dict[str, Any], persona: str, doc_summary: str
+    ) -> Optional[Dict[str, str]]:
         async with sem:
             question = await _generate_user_question(
                 client,
                 cfg,
                 model_id,
                 sample["prompt_text"],
+                persona,
                 doc_summary=doc_summary,
             )
         if not question:
@@ -333,10 +368,10 @@ async def _process_batch(
             "answer": answer or sample["answer_text"],
         }
 
-    outputs = await asyncio.gather(*[_one(sample) for sample in samples])
+    outputs = await asyncio.gather(*[_one(s, p, ds) for s, p, ds in tasks])
 
     rows: List[Dict[str, Any]] = []
-    for sample, generated in zip(samples, outputs):
+    for (sample, persona, _), generated in zip(tasks, outputs):
         if generated is None:
             continue
         row: Dict[str, Any] = {
@@ -348,7 +383,7 @@ async def _process_batch(
                 {"role": "user", "content": generated["question"]},
                 {"role": "assistant", "content": generated["answer"]},
             ],
-            "question_style": QUESTION_STYLE,
+            "question_style": persona,
             "GEN_TYPE": GEN_TYPE,
             "num_chunks": 1,
             "doc_constraint": None,
@@ -371,33 +406,47 @@ class DogInstructPhase(Phase):
     output_schema = ConversationRow
 
     async def estimate(self, **kwargs) -> Optional[int]:
+        cfg = DogInstructConfig()
+        n_personas = len(cfg.personas)
         num_rows = int(kwargs.get("num_rows", NUM_ROWS))
         exhaustive = num_rows < 0
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
 
-        need_chunks = None if exhaustive else num_rows
+        need_chunks = None if exhaustive else math.ceil(num_rows / max(n_personas, 1))
         print(f"  [dog_instruct] scanning {dataset_id} for valid chunks...", flush=True)
         valid = _count_valid_chunks(need_chunks=need_chunks)
-        rows = valid if exhaustive else min(valid, num_rows)
+        rows = valid * n_personas
+        if not exhaustive:
+            rows = min(rows, num_rows)
         print(
-            f"  [dog_instruct] {valid:,} valid chunks"
+            f"  [dog_instruct] {valid:,} valid chunks x {n_personas} personas"
             + (
                 f" (capped at NUM_ROWS={num_rows:,})"
-                if not exhaustive and rows < valid
+                if not exhaustive and rows < valid * n_personas
                 else ""
             )
         )
         return rows
 
     def describe_prompts(self):
+        cfg = DogInstructConfig()
         doc_summary = (
             format_doc_summary("[DOCUMENT_SUMMARY]") if is_summary_enabled() else ""
         )
-        return [
-            (
-                "dog_instruct / question generation (system)",
-                DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT,
-            ),
+        prompts = []
+        for persona in cfg.personas:
+            persona_instruction = DOG_INSTRUCT_PERSONAS.get(
+                persona, f"[UNKNOWN PERSONA: {persona}]"
+            )
+            prompts.append(
+                (
+                    f"dog_instruct / question generation (system) [persona={persona}]",
+                    DOG_INSTRUCT_QUESTION_SYSTEM_PROMPT.format(
+                        persona_instruction=persona_instruction
+                    ),
+                )
+            )
+        prompts += [
             (
                 "dog_instruct / question generation (user)",
                 DOG_INSTRUCT_QUESTION_USER_PROMPT.format(
@@ -418,6 +467,7 @@ class DogInstructPhase(Phase):
                 ),
             ),
         ]
+        return prompts
 
     async def run(self, input_file: str, output_file: str, **kwargs) -> None:
         global _GLOBAL_STREAM_IDX
@@ -425,9 +475,26 @@ class DogInstructPhase(Phase):
 
         validate_pipeline_env()
         cfg = DogInstructConfig()
+
+        if not cfg.personas:
+            raise ValueError(
+                "[dog_instruct] personas is empty. Configure DOG_INSTRUCT_PERSONAS."
+            )
+        unknown = [p for p in cfg.personas if p not in DOG_INSTRUCT_PERSONAS]
+        if unknown:
+            raise ValueError(
+                f"[dog_instruct] Unknown personas: {unknown}. "
+                f"Available: {list(DOG_INSTRUCT_PERSONAS)}"
+            )
+
         num_rows: int = kwargs.get("num_rows", NUM_ROWS)
         batch_size: int = kwargs.get("batch_size", cfg.batch_size)
         exhaustive = num_rows is not None and int(num_rows) < 0
+
+        print(
+            f"[dog_instruct] personas: {cfg.personas}  "
+            f"({len(cfg.personas)} pair(s) per document)"
+        )
 
         client = AsyncOpenAI(base_url=VLLM_BASE_URL, api_key=VLLM_API_KEY)
         models = await client.models.list()
@@ -458,8 +525,12 @@ class DogInstructPhase(Phase):
             print(
                 "[dog_instruct] counting valid chunks for progress bar...", flush=True
             )
-            total = _count_valid_chunks()
-            print(f"[dog_instruct] plan: {total:,} valid chunks = {total:,} QA rows")
+            valid = _count_valid_chunks()
+            total = valid * len(cfg.personas)
+            print(
+                f"[dog_instruct] plan: {valid:,} chunks x {len(cfg.personas)} personas "
+                f"= {total:,} QA rows"
+            )
         else:
             total = num_rows
         pbar = tqdm(desc="[dog_instruct] generating", initial=next_row_id, total=total)

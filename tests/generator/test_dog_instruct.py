@@ -1,13 +1,9 @@
-"""Tests for generator/phase_dog_instruct.py — no live LLM required."""
-
 import json
 
 import pytest
-
 from SeedDataGen.generator.phase_dog_instruct import (
-    DogInstructConfig,
     GEN_TYPE,
-    QUESTION_STYLE,
+    DogInstructConfig,
     _clean_answer_output,
     _clean_question_output,
     _process_batch,
@@ -16,6 +12,7 @@ from SeedDataGen.generator.phase_dog_instruct import (
 
 def _cfg(**overrides) -> DogInstructConfig:
     defaults = dict(
+        personas=["direto_objetivo"],
         question_temperature=0.7,
         question_top_p=0.9,
         question_max_tokens=256,
@@ -90,7 +87,7 @@ async def test_process_batch_writes_generated_row(monkeypatch, tmp_path):
         {"role": "assistant", "content": "A tensao nominal e 13,8 kV."},
     ]
     assert rows[0]["GEN_TYPE"] == GEN_TYPE
-    assert rows[0]["question_style"] == QUESTION_STYLE
+    assert rows[0]["question_style"] == "direto_objetivo"
     assert rows[0]["document_id"] == 7
 
 
