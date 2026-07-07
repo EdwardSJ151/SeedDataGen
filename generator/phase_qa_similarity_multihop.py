@@ -98,7 +98,7 @@ def _is_positive(mode: str) -> bool:
     return mode in ("above", "range")
 
 
-def _rebuild_used_pairs(filepath: str) -> set:
+def _rebuild_used_pairs(filepath: str, exclude_status: Optional[list] = None) -> set:
     """Rebuild the pairwise-exclusion set from a prior output file."""
     used: set = set()
     if not os.path.exists(filepath):
@@ -108,6 +108,8 @@ def _rebuild_used_pairs(filepath: str) -> set:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if exclude_status and obj.get("status") in exclude_status:
                 continue
             sid = obj.get("sample_id")
             if isinstance(sid, list) and len(sid) >= 2:
@@ -369,7 +371,11 @@ class QASimilarityMultihopPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-        used_pairs = _rebuild_used_pairs(output_file)
+
+        retry_pairs: Optional[set] = kwargs.get("retry_pairs")
+        used_pairs = _rebuild_used_pairs(
+            output_file, exclude_status=["failed"] if retry_pairs else None
+        )
         emitted_keys: set = set()
 
         if exhaustive:
@@ -411,6 +417,13 @@ class QASimilarityMultihopPhase(Phase):
             # Guard against re-emitting an identical group already on disk.
             if group_key in emitted_keys:
                 continue
+
+            # In retry mode, only process groups that have at least one failed style.
+            if retry_pairs is not None:
+                job_styles = _job_styles(job, fallback_styles)
+                if not any((group_key, s) in retry_pairs for s in job_styles):
+                    continue
+
             emitted_keys.add(group_key)
 
             sample_text = sample_text_from_chunks(group)
@@ -434,6 +447,8 @@ class QASimilarityMultihopPhase(Phase):
             positive = _is_positive(mode)
 
             for style in _job_styles(job, fallback_styles):
+                if retry_pairs is not None and (group_key, style) not in retry_pairs:
+                    continue
                 pending.append({
                     "sample_id": sample_id,
                     "sample_text": sample_text,

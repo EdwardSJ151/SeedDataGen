@@ -275,6 +275,10 @@ class QALocalMultihopPhase(Phase):
         next_row_id = last_id + 1 if last_id >= 0 else 0
         done = _processed_window_styles(output_file)
 
+        retry_pairs: Optional[set] = kwargs.get("retry_pairs")
+        if retry_pairs:
+            done -= retry_pairs  # allow failed (group_key, style) pairs to be re-generated
+
         if exhaustive:
             est = await self.estimate(num_rows=num_rows, batch_size=batch_size)
             total = est if est is not None else 0

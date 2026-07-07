@@ -57,6 +57,7 @@ from SeedDataGen.utils import (
     format_sample_text_for_prompt,
     get_last_processed_id,
     get_processed_sample_ids,
+    get_sample_group_key,
     is_summary_enabled,
     load_doc_summaries,
     make_chunk_entry,
@@ -248,6 +249,7 @@ async def _process_batch(
     next_row_id: int,
     output_file: str,
     summary_map: Dict[str, str],
+    retry_pairs: Optional[set] = None,
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
@@ -257,6 +259,8 @@ async def _process_batch(
             summary_map.get(str(sample["doc_id"])) if sample.get("doc_id") is not None else None
         )
         for style in cfg.question_styles:
+            if retry_pairs is not None and (sample["hf_row_id"], style) not in retry_pairs:
+                continue
             tasks.append((sample, style, doc_summary))
 
     async def _gen(sample: Dict[str, Any], style: str, doc_summary: str) -> Optional[str]:
@@ -392,7 +396,12 @@ class QAGenVarPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-        skip_ids = get_processed_sample_ids(output_file)
+        retry_pairs: Optional[set] = kwargs.get("retry_pairs")
+        skip_ids = get_processed_sample_ids(
+            output_file, exclude_status=["failed"] if retry_pairs else None
+        )
+        if retry_pairs:
+            skip_ids -= {gk for (gk, _) in retry_pairs}
 
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
@@ -423,7 +432,8 @@ class QAGenVarPhase(Phase):
                 skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, next_row_id, output_file, summary_map
+                client, cfg, model_id, samples, next_row_id, output_file, summary_map,
+                retry_pairs=retry_pairs,
             )
             pbar.n = min(next_row_id, total)
             pbar.refresh()

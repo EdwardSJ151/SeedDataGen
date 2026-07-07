@@ -102,7 +102,15 @@ _bootstrap_pipeline_env()
 from SeedDataGen.base_phase import Phase, PhaseRole
 from SeedDataGen.config import BATCH_SIZE, NUM_ROWS, VLLM_BASE_URL, validate_pipeline_env
 from SeedDataGen.registry import get_phase, list_phases
-from SeedDataGen.utils import count_jsonl_lines
+from SeedDataGen.utils import (
+    count_jsonl_lines,
+    get_failed_pairs,
+    get_last_processed_id,
+    get_max_int_field,
+    get_sample_group_key,
+    stamp_statuses,
+    write_jsonl_batch,
+)
 
 # Auto-discover and import all phase_*.py modules so their @register
 # decorators fire before we look anything up in the registry.
@@ -118,11 +126,12 @@ def _import_all_phases() -> None:
 
 
 # YAML loading
-def _load_pipeline_yaml(path: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def _load_pipeline_yaml(path: str) -> tuple[list[dict[str, Any]], dict[str, str], int]:
     """
-    Returns (entries, global_env) where:
-      entries    — the 'pipeline:' list
-      global_env — the optional top-level 'env:' dict (empty if absent)
+    Returns (entries, global_env, retry_max_attempts) where:
+      entries             — the 'pipeline:' list
+      global_env          — the optional top-level 'env:' dict (empty if absent)
+      retry_max_attempts  — 0 = no retry (default), -1 = infinite, N = max retries
     """
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
@@ -135,7 +144,8 @@ def _load_pipeline_yaml(path: str) -> tuple[list[dict[str, Any]], dict[str, str]
         if "output" not in entry:
             raise ValueError(f"Pipeline entry {i} (phase='{entry['phase']}') is missing the 'output' key.")
     global_env = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
-    return entries, global_env
+    retry_max_attempts = int(data.get("retry_max_attempts", 0))
+    return entries, global_env, retry_max_attempts
 
 
 def _is_multi_run_yaml(path: str) -> bool:
@@ -643,6 +653,283 @@ def _require_dataset_env() -> None:
     validate_pipeline_env()
 
 
+# ---------------------------------------------------------------------------
+# Retry orchestrator
+# ---------------------------------------------------------------------------
+
+def _build_gen_pairs(gen_output: str) -> dict[tuple[str, str], list[int]]:
+    """
+    Return {(group_key, question_style): [row_ids]} for rows that are NOT
+    already stamped as "failed" (i.e. rows from the latest retry attempt).
+    """
+    import json
+    pairs: dict[tuple[str, str], list[int]] = {}
+    if not os.path.exists(gen_output):
+        return pairs
+    with open(gen_output, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("status") == "failed":
+                continue
+            gk = get_sample_group_key(obj.get("sample_id", ""))
+            qs = obj.get("question_style") or ""
+            row_id = obj.get("id")
+            if row_id is None:
+                continue
+            key = (gk, qs)
+            pairs.setdefault(key, []).append(row_id)
+    return pairs
+
+
+def _build_passed_pairs(embed_output: str) -> set[tuple[str, str]]:
+    """Return {(group_key, question_style)} for rows in the embed_filter output."""
+    import json
+    passed: set[tuple[str, str]] = set()
+    if not os.path.exists(embed_output):
+        return passed
+    with open(embed_output, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            gk = get_sample_group_key(obj.get("sample_id", ""))
+            qs = obj.get("question_style") or ""
+            passed.add((gk, qs))
+    return passed
+
+
+async def _retry_embed_filter(
+    embed_output: str,
+    pre_embed_output: str,
+    failed_pairs: set[tuple[str, str]],
+    embed_phase: Phase,
+    batch_size: int,
+) -> None:
+    """
+    Run embed_filter on a combined input of existing survivors for affected
+    groups + new retry rows from the pre-embed-filter phase output.
+
+    New survivors (rows not already in embed_output) are appended to embed_output.
+    """
+    import json
+    import tempfile
+
+    affected_groups = {gk for (gk, _) in failed_pairs}
+
+    # Load existing survivors for affected groups.
+    existing: list[dict] = []
+    if os.path.exists(embed_output):
+        with open(embed_output, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if get_sample_group_key(obj.get("sample_id", "")) in affected_groups:
+                    existing.append(obj)
+
+    # Find new retry rows from the pre-embed input (judge output).
+    last_embed_input_id = get_max_int_field(embed_output, "input_id")
+    new_rows: list[dict] = []
+    if os.path.exists(pre_embed_output):
+        with open(pre_embed_output, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("id", -1) <= last_embed_input_id:
+                    continue
+                if get_sample_group_key(obj.get("sample_id", "")) not in affected_groups:
+                    continue
+                new_rows.append(obj)
+
+    if not new_rows:
+        print("[retry] no new rows for affected groups; skipping embed_filter step")
+        return
+
+    # Build combined temp input: existing survivors (context) first, new rows after.
+    # Renumber ids sequentially so embed_filter's id-based skip logic works cleanly.
+    tmp_dir = os.path.dirname(embed_output)
+    tmp_input = os.path.join(tmp_dir, "_retry_embed_input.jsonl")
+    tmp_output = os.path.join(tmp_dir, "_retry_embed_output.jsonl")
+
+    combined: list[dict] = []
+    for i, row in enumerate(existing):
+        r = dict(row)
+        r["_context"] = True
+        r["id"] = i
+        combined.append(r)
+    offset = len(existing)
+    for j, row in enumerate(new_rows):
+        r = dict(row)
+        r["_original_id"] = r["id"]
+        r["id"] = offset + j
+        combined.append(r)
+
+    write_jsonl_batch(tmp_input, combined)
+
+    # Run embed_filter fresh on the temp input (no prior output → resume_from=0).
+    try:
+        await embed_phase.run(
+            input_file=tmp_input,
+            output_file=tmp_output,
+            batch_size=batch_size,
+        )
+    except Exception as e:
+        print(f"[retry] embed_filter failed during retry: {e}")
+        for f in (tmp_input, tmp_output):
+            if os.path.exists(f):
+                os.remove(f)
+        return
+
+    # Extract new survivors: rows without _context.
+    new_survivors: list[dict] = []
+    if os.path.exists(tmp_output):
+        with open(tmp_output, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("_context"):
+                    continue
+                new_survivors.append(obj)
+
+    if new_survivors:
+        next_id = get_last_processed_id(embed_output) + 1
+        for row in new_survivors:
+            row["input_id"] = row.pop("_original_id", row.get("input_id"))
+            row.pop("_context", None)
+            row["id"] = next_id
+            next_id += 1
+        write_jsonl_batch(embed_output, new_survivors)
+        print(f"[retry] embed_filter appended {len(new_survivors)} new survivor(s) → {embed_output}")
+    else:
+        print("[retry] embed_filter: no new survivors from retry rows")
+
+    for f in (tmp_input, tmp_output):
+        if os.path.exists(f):
+            os.remove(f)
+
+
+async def _retry_pipeline(
+    entries: list[dict[str, Any]],
+    phases: list[Phase],
+    batch_size: int,
+    max_attempts: int,
+) -> None:
+    """
+    After the main pipeline completes, identify failed (group_key, style) pairs
+    and iterate: re-run generator → tail phases resume naturally → combined
+    embed_filter step.  Repeats up to max_attempts times (-1 = infinite).
+    """
+    if phases[-1].role != PhaseRole.DEDUP:
+        print(
+            "[retry] last phase is not a DEDUP phase — retry requires embed_filter as the "
+            "final phase; skipping retry."
+        )
+        return
+    if len(entries) < 2:
+        print("[retry] pipeline has fewer than 2 phases; skipping retry.")
+        return
+
+    gen_entry = entries[0]
+    embed_entry = entries[-1]
+    pre_embed_entry = entries[-2]
+    gen_phase = phases[0]
+    embed_phase = phases[-1]
+    tail_phases = list(zip(entries[1:-1], phases[1:-1]))
+
+    gen_output = gen_entry["output"]
+    embed_output = embed_entry["output"]
+    pre_embed_output = pre_embed_entry["output"]
+
+    attempt = 0
+    while True:
+        attempt += 1
+        print(f"\n{'=' * 60}")
+        print(f"RETRY attempt {attempt}" + (f"/{max_attempts}" if max_attempts > 0 else ""))
+        print(f"{'=' * 60}")
+
+        # 1. Identify failures.
+        all_gen_pairs = _build_gen_pairs(gen_output)
+        passed_pairs = _build_passed_pairs(embed_output)
+        failed_pairs = {k for k in all_gen_pairs if k not in passed_pairs}
+
+        if not failed_pairs:
+            print("[retry] all pairs passed — converged.")
+            break
+
+        print(f"[retry] {len(failed_pairs)} pair(s) still failed; {len(passed_pairs)} passed.")
+
+        # 2. Stamp statuses in the generator output.
+        passed_ids: set[int] = {
+            max(all_gen_pairs[k]) for k in all_gen_pairs if k in passed_pairs
+        }
+        failed_ids: set[int] = {
+            max(all_gen_pairs[k]) for k in all_gen_pairs if k in failed_pairs
+        }
+        stamp_statuses(gen_output, passed_ids, failed_ids)
+
+        # 3. Re-run generator with retry_pairs.
+        gen_cfg = gen_entry.get("config", {}) or {}
+        gen_kwargs: dict[str, Any] = gen_entry.get("kwargs", {}) or {}
+        with _phase_env(gen_cfg):
+            await gen_phase.run(
+                input_file="",
+                output_file=gen_output,
+                retry_pairs=failed_pairs,
+                batch_size=batch_size,
+                num_rows=-1,
+                **gen_kwargs,
+            )
+
+        # 4. Re-run tail phases (all except embed_filter); resume handles new rows.
+        for tail_entry, tail_phase in tail_phases:
+            tail_idx = entries.index(tail_entry)
+            in_file = entries[tail_idx - 1]["output"]
+            out_file = tail_entry["output"]
+            tail_cfg = tail_entry.get("config", {}) or {}
+            tail_kwargs: dict[str, Any] = tail_entry.get("kwargs", {}) or {}
+            print(f"\n[retry] re-running {tail_phase.name} ...")
+            with _phase_env(tail_cfg):
+                await tail_phase.run(
+                    input_file=in_file,
+                    output_file=out_file,
+                    batch_size=batch_size,
+                    num_rows=-1,
+                    **tail_kwargs,
+                )
+            _finalize_phase_output(tail_phase, out_file, [])
+
+        # 5. embed_filter combined-input step.
+        print(f"\n[retry] running embed_filter for {len(failed_pairs)} affected group(s) ...")
+        embed_cfg = embed_entry.get("config", {}) or {}
+        with _phase_env(embed_cfg):
+            await _retry_embed_filter(
+                embed_output, pre_embed_output, failed_pairs, embed_phase, batch_size
+            )
+
+        if max_attempts > 0 and attempt >= max_attempts:
+            # Re-check failures after this last attempt.
+            all_gen_pairs = _build_gen_pairs(gen_output)
+            passed_pairs = _build_passed_pairs(embed_output)
+            still_failed = {k for k in all_gen_pairs if k not in passed_pairs}
+            if still_failed:
+                print(
+                    f"[retry] max_attempts={max_attempts} reached; "
+                    f"{len(still_failed)} pair(s) still failed."
+                )
+            else:
+                print("[retry] all pairs passed after final attempt.")
+            break
+
+
 # CLI
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -756,7 +1043,7 @@ Examples:
 
     # Legacy single-pipeline format
     _apply_pipeline_env_from_arg(args.pipeline)
-    entries, global_env = _load_pipeline_yaml(args.pipeline)
+    entries, global_env, retry_max_attempts = _load_pipeline_yaml(args.pipeline)
     _require_dataset_env()
     _import_all_phases()
 
@@ -795,8 +1082,8 @@ Examples:
         )
         return
 
-    asyncio.run(
-        run_pipeline(
+    async def _run_with_retry() -> None:
+        await run_pipeline(
             entries,
             phases,
             start_from=args.start_from,
@@ -806,7 +1093,10 @@ Examples:
             num_rows=num_rows,
             batch_size=batch_size,
         )
-    )
+        if retry_max_attempts != 0 and not args.start_from and not args.only:
+            await _retry_pipeline(entries, phases, batch_size, retry_max_attempts)
+
+    asyncio.run(_run_with_retry())
 
 
 if __name__ == "__main__":

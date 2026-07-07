@@ -144,6 +144,7 @@ async def _process_batch(
     samples: List[Dict[str, Any]],
     next_row_id: int,
     output_file: str,
+    retry_pairs: Optional[set] = None,
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
@@ -174,7 +175,9 @@ async def _process_batch(
         if raw is None:
             continue
         hf_row_id = sample["hf_row_id"]
-        for qa in parse_qa_pairs(raw):
+        for i, qa in enumerate(parse_qa_pairs(raw)):
+            if retry_pairs is not None and (hf_row_id, str(i)) not in retry_pairs:
+                continue
             rows.append({
                 "id": next_row_id,
                 "origin_id": next_row_id,
@@ -182,6 +185,7 @@ async def _process_batch(
                 "sample_text": {hf_row_id: sample["sample_text"]},
                 "question": qa["question"],
                 "answer": qa["answer"],
+                "question_style": str(i),
                 "GEN_TYPE": GEN_TYPE,
                 "num_chunks": 1,
                 "doc_constraint": None,
@@ -264,7 +268,12 @@ class QAGenPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-        skip_ids = get_processed_sample_ids(output_file)
+        retry_pairs: Optional[set] = kwargs.get("retry_pairs")
+        skip_ids = get_processed_sample_ids(
+            output_file, exclude_status=["failed"] if retry_pairs else None
+        )
+        if retry_pairs:
+            skip_ids -= {gk for (gk, _) in retry_pairs}
 
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
@@ -286,7 +295,8 @@ class QAGenPhase(Phase):
                 skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, next_row_id, output_file
+                client, cfg, model_id, samples, next_row_id, output_file,
+                retry_pairs=retry_pairs,
             )
             if total is not None:
                 pbar.n = min(next_row_id, num_rows)

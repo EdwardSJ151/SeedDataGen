@@ -291,13 +291,18 @@ def load_doc_summaries(
     return out
 
 
-def get_processed_sample_ids(filepath: str) -> set:
+def get_processed_sample_ids(
+    filepath: str, exclude_status: Optional[List[str]] = None
+) -> set:
     """
     Return the set of all sample ids already present in *filepath*.
 
     Flattens list-valued sample_id (multihop rows) and includes scalar
     sample_id (single-chunk rows), so generators can skip already-processed
     source records regardless of row shape.
+
+    Pass ``exclude_status=["failed"]`` to skip rows whose ``status`` field
+    matches — used by the retry orchestrator so failed rows are re-eligible.
     """
     seen: set = set()
     if not os.path.exists(filepath):
@@ -308,12 +313,70 @@ def get_processed_sample_ids(filepath: str) -> set:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if exclude_status and obj.get("status") in exclude_status:
+                continue
             sid = obj.get("sample_id")
             if isinstance(sid, list):
                 seen.update(str(s) for s in sid)
             elif sid is not None:
                 seen.add(str(sid))
     return seen
+
+
+def get_failed_pairs(filepath: str) -> set:
+    """
+    Return the set of ``(group_key, question_style)`` tuples for rows with
+    ``status="failed"`` in *filepath*.
+
+    Used by the retry orchestrator to identify which (chunk, style) pairs
+    need to be regenerated. ``question_style`` defaults to ``""`` for
+    generators that don't emit a style field (e.g. ``qa_gen``).
+    """
+    pairs: set = set()
+    if not os.path.exists(filepath):
+        return pairs
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("status") != "failed":
+                continue
+            gk = get_sample_group_key(obj["sample_id"])
+            qs = obj.get("question_style") or ""
+            pairs.add((gk, qs))
+    return pairs
+
+
+def stamp_statuses(
+    filepath: str, passed_ids: set, failed_ids: set
+) -> None:
+    """
+    Rewrite *filepath* in-place, setting ``status="passed"`` for rows whose
+    ``id`` is in *passed_ids* and ``status="failed"`` for rows in *failed_ids*.
+    Rows in neither set are written back unchanged.
+
+    Only called on generator output files (bounded in size).
+    """
+    if not os.path.exists(filepath):
+        return
+    lines_out: List[str] = []
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                lines_out.append(line)
+                continue
+            row_id = obj.get("id")
+            if row_id in passed_ids:
+                obj["status"] = "passed"
+            elif row_id in failed_ids:
+                obj["status"] = "failed"
+            lines_out.append(json.dumps(obj, ensure_ascii=False) + "\n")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.writelines(lines_out)
 
 
 def get_sample_group_key(sample_id: Union[int, List[int]]) -> str:

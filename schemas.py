@@ -27,6 +27,9 @@ class BaseRow(BaseModel):
     # sample_text is the flat document string for legacy/single-chunk rows, or a
     # {hf_row_id: chunk_text} or {hf_row_id: {text, document_name}} mapping for multihop rows.
     sample_text: Union[str, Dict[str, Union[str, Dict[str, str]]]]
+    # Retry status: None=pending, "passed"=survived full pipeline, "failed"=needs retry.
+    # Stamped by the retry orchestrator in run_pipeline.py; ignored by all phases.
+    status: Optional[str] = None
 
 
 class QARow(BaseRow):

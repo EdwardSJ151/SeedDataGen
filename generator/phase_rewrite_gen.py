@@ -70,6 +70,7 @@ from SeedDataGen.utils import (
     format_sample_text_for_prompt,
     get_last_processed_id,
     get_processed_sample_ids,
+    get_sample_group_key,
     make_chunk_entry,
     require_hf_field,
     write_jsonl_batch,
@@ -300,10 +301,16 @@ async def _process_batch(
     samples: List[Dict[str, Any]],
     next_row_id: int,
     output_file: str,
+    retry_pairs: Optional[set] = None,
 ) -> int:
     sem = asyncio.Semaphore(cfg.max_concurrent)
 
-    tasks = [(sample, style) for sample in samples for style in cfg.question_styles]
+    tasks = [
+        (sample, style)
+        for sample in samples
+        for style in cfg.question_styles
+        if retry_pairs is None or (sample["hf_row_id"], style) in retry_pairs
+    ]
 
     async def _gen(sample: Dict[str, Any], style: str):
         return await _generate_conversation(
@@ -407,7 +414,12 @@ class RewriteGenPhase(Phase):
 
         last_id = get_last_processed_id(output_file)
         next_row_id = last_id + 1 if last_id >= 0 else 0
-        skip_ids = get_processed_sample_ids(output_file)
+        retry_pairs: Optional[set] = kwargs.get("retry_pairs")
+        skip_ids = get_processed_sample_ids(
+            output_file, exclude_status=["failed"] if retry_pairs else None
+        )
+        if retry_pairs:
+            skip_ids -= {gk for (gk, _) in retry_pairs}
 
         ds_iter = _stream_dataset()
         dataset_id = os.environ.get("DATASET_ID", DATASET_ID)
@@ -435,7 +447,8 @@ class RewriteGenPhase(Phase):
                 skip_ids.add(s["hf_row_id"])
 
             next_row_id = await _process_batch(
-                client, cfg, model_id, samples, next_row_id, output_file
+                client, cfg, model_id, samples, next_row_id, output_file,
+                retry_pairs=retry_pairs,
             )
             pbar.n = min(next_row_id, total)
             pbar.refresh()
