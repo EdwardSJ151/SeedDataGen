@@ -28,7 +28,7 @@ services:
     ports:
       - "8077:8000"
     volumes:
-      - ./cache/vllm:/workspace/
+      - ./.cache/vllm:/workspace/
     environment:
       VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "1"
       HF_HOME: /workspace/hf_cache
