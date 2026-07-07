@@ -16,7 +16,8 @@ services:
     stdin_open: true
     tty: true
     volumes:
-      - .:/workspace
+      - ./.docker-workspace:/workspace
+      - .:/workspace/SeedDataGen
       - ./.cache/huggingface:/cache/huggingface
 
   qwen35:
