@@ -157,15 +157,16 @@ def _is_multi_run_yaml(path: str) -> bool:
 
 def _load_multihop_yaml(
     path: str,
-) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, str], int]:
     """
     Parse the multi-run YAML format.
 
-    Returns (preprocess_entry, tail_entries, runs, global_env):
-      preprocess_entry — the optional 'preprocess:' mapping (or None)
-      tail_entries     — the shared 'tail:' list (phases after each generator)
-      runs             — the 'runs:' list (one full pipeline per entry)
-      global_env       — the optional top-level 'env:' dict
+    Returns (preprocess_entry, tail_entries, runs, global_env, retry_max_attempts):
+      preprocess_entry   — the optional 'preprocess:' mapping (or None)
+      tail_entries       — the shared 'tail:' list (phases after each generator)
+      runs               — the 'runs:' list (one full pipeline per entry)
+      global_env         — the optional top-level 'env:' dict
+      retry_max_attempts — 0 = no retry (default), -1 = infinite, N = max retries
     """
     with open(path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
@@ -192,7 +193,8 @@ def _load_multihop_yaml(
         raise ValueError(f"'preprocess' must contain a 'phase' key: {preprocess_entry!r}")
 
     global_env = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
-    return preprocess_entry, tail, runs, global_env
+    retry_max_attempts = int(data.get("retry_max_attempts", 0))
+    return preprocess_entry, tail, runs, global_env, retry_max_attempts
 
 
 # Per-phase config override (YAML config: block → temporary env vars)
@@ -533,6 +535,7 @@ async def _run_multi(
     *,
     num_rows_cli: Optional[int],
     batch_size: int,
+    retry_max_attempts: int = 0,
 ) -> None:
     if preprocess_entry:
         await _run_preprocess(preprocess_entry, batch_size)
@@ -560,6 +563,8 @@ async def _run_multi(
                 (f"run {run_idx}/{run['generator']}: {name}", path)
                 for name, path in run_empties
             )
+            if retry_max_attempts != 0:
+                await _retry_pipeline(entries, phases, batch_size, retry_max_attempts)
 
     print(f"\n{'=' * 60}")
     print("ALL RUNS COMPLETE")
@@ -996,7 +1001,7 @@ Examples:
     # Multi-run orchestrator format (preprocess / tail / runs)
     if _is_multi_run_yaml(args.pipeline):
         _apply_pipeline_env_from_arg(args.pipeline)
-        preprocess_entry, tail_entries, runs, global_env = _load_multihop_yaml(args.pipeline)
+        preprocess_entry, tail_entries, runs, global_env, retry_max_attempts = _load_multihop_yaml(args.pipeline)
         _require_dataset_env()
         _import_all_phases()
 
@@ -1012,6 +1017,8 @@ Examples:
         print(f"Pipeline  : {args.pipeline}")
         print(f"Batch size: {batch_size}")
         print(f"Runs      : {len(runs)}")
+        if retry_max_attempts != 0:
+            print(f"Retry     : {retry_max_attempts if retry_max_attempts > 0 else 'until convergence'} (per run)")
         if global_env:
             print(f"Global env: {global_env}")
 
@@ -1037,6 +1044,7 @@ Examples:
                 runs,
                 num_rows_cli=args.num_rows,
                 batch_size=batch_size,
+                retry_max_attempts=retry_max_attempts,
             )
         )
         return
